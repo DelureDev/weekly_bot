@@ -1,21 +1,21 @@
 # weekly_bot
 
-Telegram bot that builds a weekly report from Google Sheets and posts it to Telegram.
+Telegram-бот, который формирует еженедельный отчет из Google Sheets и отправляет его в Telegram.
 
-## Features
+## Возможности
 
-- `/otchet` generates a weekly report from Google Sheets
-- `/chatid` prints the current chat id
-- Scheduled auto-send every Monday at 15:00 in `REPORT_TIMEZONE`
-- Optional access restrictions via `ALLOWED_CHAT_IDS` and `ALLOWED_TG_USERS`
+- `/otchet` — формирует еженедельный отчет из Google Sheets
+- `/chatid` — показывает ID текущего чата
+- Автоотправка по расписанию каждый понедельник в 15:00 в `REPORT_TIMEZONE`
+- Опциональные ограничения доступа через `ALLOWED_CHAT_IDS` и `ALLOWED_TG_USERS`
 
-## Requirements
+## Требования
 
 - Python 3.11+
-- Telegram bot token
-- Google service account JSON with read access to the target spreadsheet
+- Токен Telegram-бота
+- JSON-ключ сервисного аккаунта Google с доступом на чтение нужной таблицы
 
-## Install
+## Установка
 
 Linux:
 
@@ -33,57 +33,57 @@ py -3 -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Environment Variables
+## Переменные окружения
 
-Required:
+Обязательные:
 
-- `BOT_TOKEN` - Telegram bot token
-- `SPREADSHEET_ID` - Google Sheets document id
+- `BOT_TOKEN` — токен Telegram-бота
+- `SPREADSHEET_ID` — ID документа Google Sheets
 
-Optional:
+Опциональные:
 
-- `CREDS_FILE` - path to service account JSON (default: `credentials.json`)
-- `SHEET_NAME` - worksheet name (default: `Список задач (2026)`)
-- `REPORT_CHAT_ID` - chat id for scheduled weekly send
-- `INTRO_MENTIONS` - text prefix before report
-- `INTRO_TEXT` - intro message text
-- `REPORT_TIMEZONE` - IANA timezone (default: `Europe/Moscow`)
-- `ALLOWED_CHAT_IDS` - comma-separated chat IDs allowed to run `/otchet`
-- `ALLOWED_TG_USERS` - comma-separated user IDs allowed to run `/otchet` and `/chatid`
+- `CREDS_FILE` — путь до JSON-ключа сервисного аккаунта (по умолчанию: `credentials.json`)
+- `SHEET_NAME` — имя листа (по умолчанию: `Список задач (2026)`)
+- `REPORT_CHAT_ID` — ID чата для отправки отчета по расписанию
+- `INTRO_MENTIONS` — префикс перед отчетом
+- `INTRO_TEXT` — текст вступительного сообщения
+- `REPORT_TIMEZONE` — IANA-таймзона (по умолчанию: `Europe/Moscow`)
+- `ALLOWED_CHAT_IDS` — список разрешенных chat ID через запятую для `/otchet`
+- `ALLOWED_TG_USERS` — список разрешенных user ID через запятую для `/otchet` и `/chatid`
 
-If `ALLOWED_CHAT_IDS` or `ALLOWED_TG_USERS` is empty, that filter is disabled.
+Если `ALLOWED_CHAT_IDS` или `ALLOWED_TG_USERS` пусты, соответствующее ограничение отключено.
 
-## Run
+## Запуск
 
 ```bash
 python3 weekly_report.py
 ```
 
-## Validation
+## Валидация
 
 ```bash
 python3 -m py_compile weekly_report.py test_gsheets.py test_telegram.py
 ```
 
-## Production (systemd)
+## Прод (systemd)
 
-- `ExecStart` should point to the project venv, for example:
+- В `ExecStart` должен быть путь к Python в virtualenv проекта, например:
 
 ```ini
 ExecStart=/home/adminos/weekly_bot/.venv/bin/python /home/adminos/weekly_bot/weekly_report.py
 ```
 
-- Ensure `CREDS_FILE` points to an existing JSON key file.
-- Prefer storing secrets in `EnvironmentFile` (for example `/etc/weekly_bot.env`) with `chmod 600`, instead of inline `Environment="..."` entries in unit files.
+- Убедитесь, что `CREDS_FILE` указывает на существующий JSON-ключ.
+- Секреты лучше хранить через `EnvironmentFile` (например, `/etc/weekly_bot.env`) с правами `chmod 600`, а не inline через `Environment="..."` в unit-файле.
 
-## Agent Workflow
+## Workflow агентов
 
-1. Start with `Codex.agent.md`.
-2. Route to one specialized agent for implementation.
-3. Run `QATest.agent.md` and `Security.agent.md` before merge.
-4. Finish with `Documentation.agent.md` if behavior/config changed.
+1. Начните с `Codex.agent.md`.
+2. Передайте реализацию одному специализированному агенту.
+3. Перед merge выполните проверки через `QATest.agent.md` и `Security.agent.md`.
+4. Завершите проходом `Documentation.agent.md`, если менялось поведение или конфигурация.
 
-## Smoke Scripts
+## Smoke-скрипты
 
-- `test_gsheets.py` - manual check for Google Sheets connectivity (uses env vars)
-- `test_telegram.py` - manual check for Telegram send (uses env vars)
+- `test_gsheets.py` — ручная проверка подключения к Google Sheets (использует env)
+- `test_telegram.py` — ручная проверка отправки в Telegram (использует env)
