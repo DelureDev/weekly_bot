@@ -1,8 +1,10 @@
+import asyncio
 import logging
 import os
 import sys
 from datetime import date, datetime, timedelta
 from html import escape as html_escape
+from threading import Lock
 from typing import Optional
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -56,6 +58,8 @@ ALLOWED_TG_USERS_RAW = os.getenv("ALLOWED_TG_USERS", "")
 
 # Cached worksheet (auth/open happens once; if fails, cache resets)
 _SHEET = None
+_SHEET_LOCK = Lock()
+_REPORT_LOCK = Lock()
 
 
 def _h(text: str) -> str:
@@ -126,9 +130,12 @@ def get_sheet():
     if _SHEET is not None:
         return _SHEET
 
-    creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
-    gc = gspread.authorize(creds)
-    _SHEET = gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    with _SHEET_LOCK:
+        if _SHEET is not None:
+            return _SHEET
+        creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
+        gc = gspread.authorize(creds)
+        _SHEET = gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
     return _SHEET
 
 
@@ -166,7 +173,8 @@ def generate_report() -> str:
         sheet = get_sheet()
         records = sheet.get_all_records()
     except Exception as exc:
-        _SHEET = None
+        with _SHEET_LOCK:
+            _SHEET = None
         logger.exception("Google Sheets read failed: %s", exc)
         raise
 
@@ -231,11 +239,16 @@ def generate_report() -> str:
     return "\n".join(lines)
 
 
+def generate_report_threadsafe() -> str:
+    with _REPORT_LOCK:
+        return generate_report()
+
+
 async def send_report(chat_id: int, application) -> None:
+    report_text = await asyncio.to_thread(generate_report_threadsafe)
     intro = f"{INTRO_MENTIONS} {INTRO_TEXT}".strip()
     await application.bot.send_message(chat_id=chat_id, text=intro)
 
-    report_text = generate_report()
     await application.bot.send_message(
         chat_id=chat_id,
         text=report_text,
