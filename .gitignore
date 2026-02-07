@@ -1,0 +1,16 @@
+﻿.env
+.env.*
+.venv/
+venv/
+bin/
+lib/
+lib64
+pyvenv.cfg
+__pycache__/
+*.pyc
+*.pyo
+*.log
+data/
+tmp/
+credentials.json
+*.service-account.json
