@@ -18,3 +18,4 @@ This folder defines role-based agents for development tasks in this repository.
 2. Route to one specialized agent for implementation.
 3. Run `QATest.agent.md` and `Security.agent.md` before merge.
 4. Finish with `Documentation.agent.md` if behavior/config changed.
+5. After checks pass, commit and push to the active branch unless the user asks to skip push.

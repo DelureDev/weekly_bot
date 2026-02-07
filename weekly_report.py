@@ -220,21 +220,18 @@ def generate_report() -> str:
     in_progress_week_str = format_date_range(in_progress_start, in_progress_end)
 
     lines: list[str] = []
-    lines.append(f"<b>{_h('Выполнено за ' + done_week_str)}</b>")
-    lines.append("")
-
+    lines.append(f"<b>{_h(f'✅ Выполнено ({done_week_str})')}</b>")
     if done_tasks:
         lines.extend(done_tasks)
     else:
-        lines.append(_h("Нет выполненных задач."))
+        lines.append("• —")
 
     lines.append("")
-    lines.append(f"<b>{_h('В работе ' + in_progress_week_str + ':')}</b>")
-
+    lines.append(f"<b>{_h(f'🔄 В работе ({in_progress_week_str})')}</b>")
     if in_progress_tasks:
         lines.extend(in_progress_tasks)
     else:
-        lines.append(_h("Нет задач в работе."))
+        lines.append("• —")
 
     return "\n".join(lines)
 

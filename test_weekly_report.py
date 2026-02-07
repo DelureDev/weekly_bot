@@ -77,7 +77,7 @@ class ReportGenerationTests(unittest.TestCase):
         ):
             report = wr.generate_report()
 
-        self.assertIn("<b>\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u043e \u0437\u0430 done-range</b>", report)
+        self.assertIn("<b>\u2705 \u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u043e (done-range)</b>", report)
         self.assertIn(
             '<a href="https://example.com/done?a=1&amp;b=2">&lt;task done&gt;</a>',
             report,

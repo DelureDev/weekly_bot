@@ -14,6 +14,7 @@ Act as the default development agent for this repository. Route work to speciali
 3. Implement the smallest safe change that solves the request.
 4. Validate with `py -3 -m py_compile weekly_report.py test_gsheets.py test_telegram.py`.
 5. Update docs when behavior/config/commands change.
+6. After successful validation, commit and push changes to `origin/<current-branch>` unless the user explicitly asks not to push.
 
 ## Non-Negotiable Guardrails
 - Never commit secrets or `.env` data.
