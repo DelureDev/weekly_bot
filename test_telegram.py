@@ -1,11 +1,19 @@
 import asyncio
+import os
+
 from telegram import Bot
 
-BOT_TOKEN = "8323649979:AAGrCjN8ZkRzymcKV1S2U_L16cNf9GpAWC4"
-CHAT_ID = -5119304406
 
-async def main():
-	bot = Bot(token=BOT_TOKEN)
-	await bot.send_message(chat_id=CHAT_ID, text="Тест: бот на Python жив 👋")
+async def main() -> None:
+    token = os.getenv("BOT_TOKEN")
+    chat_id_raw = os.getenv("CHAT_ID")
+    if not token or not chat_id_raw:
+        raise SystemExit("Set BOT_TOKEN and CHAT_ID before running this smoke script.")
 
-asyncio.run(main())
+    chat_id = int(chat_id_raw)
+    bot = Bot(token=token)
+    await bot.send_message(chat_id=chat_id, text="Test: bot is reachable.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

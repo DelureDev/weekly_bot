@@ -1,19 +1,30 @@
+import os
+
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- Настройки ---
-SPREADSHEET_ID = "1uqqmhV2gXAEHTwox8-Zu5syl9YUNI2vTj4gIIWNLL2Y"
-SHEET_NAME = "Список задач (2026)"
 
-# --- Авторизация через сервисный аккаунт ---
-scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
-gc = gspread.authorize(creds)
+def main() -> None:
+    spreadsheet_id = os.getenv("SPREADSHEET_ID")
+    sheet_name = os.getenv("SHEET_NAME", "Список задач (2026)")
+    creds_file = os.getenv("CREDS_FILE", "credentials.json")
 
-# --- Попытка открыть лист и вывести 5 первых строк ---
-sheet = gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-rows = sheet.get_all_records()
+    if not spreadsheet_id:
+        raise SystemExit("Set SPREADSHEET_ID before running this smoke script.")
 
-print("Успешно подключились! Вот первые 5 задач:")
-for r in rows[:5]:
-    print(f"{r['Задача']} — {r['Ссылка']}")
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = Credentials.from_service_account_file(creds_file, scopes=scopes)
+    gc = gspread.authorize(creds)
+
+    sheet = gc.open_by_key(spreadsheet_id).worksheet(sheet_name)
+    rows = sheet.get_all_records()
+
+    print("Connected to Google Sheets. First 5 rows:")
+    for row in rows[:5]:
+        task = row.get("Задача", "")
+        link = row.get("Ссылка", "")
+        print(f"{task} - {link}")
+
+
+if __name__ == "__main__":
+    main()

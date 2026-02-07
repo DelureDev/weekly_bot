@@ -3,6 +3,8 @@ import os
 import sys
 from datetime import date, datetime, timedelta
 from html import escape as html_escape
+from typing import Optional
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -49,14 +51,61 @@ INTRO_MENTIONS = os.getenv("INTRO_MENTIONS", "@DelureW @paul47789")
 INTRO_TEXT = os.getenv("INTRO_TEXT", "Коллеги, подготовил еженедельный отчет")
 
 REPORT_TIMEZONE = ZoneInfo(os.getenv("REPORT_TIMEZONE", "Europe/Moscow"))
+ALLOWED_CHAT_IDS_RAW = os.getenv("ALLOWED_CHAT_IDS", "")
+ALLOWED_TG_USERS_RAW = os.getenv("ALLOWED_TG_USERS", "")
 
 # Cached worksheet (auth/open happens once; if fails, cache resets)
 _SHEET = None
 
 
 def _h(text: str) -> str:
-    """Escape text for HTML parse_mode."""
+    """Escape text for HTML body."""
     return html_escape(text or "", quote=False)
+
+
+def _h_attr(text: str) -> str:
+    """Escape text for HTML attributes."""
+    return html_escape(text or "", quote=True)
+
+
+def _parse_int_set(raw: str, name: str) -> set[int]:
+    values: set[int] = set()
+    for chunk in (raw or "").split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        try:
+            values.add(int(item))
+        except ValueError:
+            logger.warning("Invalid %s entry ignored: %r", name, item)
+    return values
+
+
+ALLOWED_CHAT_IDS = _parse_int_set(ALLOWED_CHAT_IDS_RAW, "ALLOWED_CHAT_IDS")
+ALLOWED_TG_USERS = _parse_int_set(ALLOWED_TG_USERS_RAW, "ALLOWED_TG_USERS")
+
+
+def _safe_href(url: str) -> Optional[str]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not parsed.netloc:
+        return None
+    return _h_attr(url)
+
+
+def _is_allowed_chat(chat_id: int) -> bool:
+    if not ALLOWED_CHAT_IDS:
+        return True
+    return chat_id in ALLOWED_CHAT_IDS
+
+
+def _is_allowed_user(user_id: Optional[int]) -> bool:
+    if not ALLOWED_TG_USERS:
+        return True
+    if user_id is None:
+        return False
+    return user_id in ALLOWED_TG_USERS
 
 
 def _ensure_configured() -> None:
@@ -140,14 +189,22 @@ def generate_report() -> str:
         # Done: previous week
         if status == "Выполнено" and date_closed_dt and done_start <= date_closed_dt <= done_end:
             if link:
-                done_tasks.append(f'• <a href="{_h(link)}">{_h(task)}</a>')
+                safe_link = _safe_href(link)
+                if safe_link:
+                    done_tasks.append(f'• <a href="{safe_link}">{_h(task)}</a>')
+                else:
+                    done_tasks.append(f"• {_h(task)}")
             else:
                 done_tasks.append(f"• {_h(task)}")
 
         # In progress: all tasks with status "В работе"
         elif status == "В работе":
             if link:
-                in_progress_tasks.append(f'• <a href="{_h(link)}">{_h(task)}</a>')
+                safe_link = _safe_href(link)
+                if safe_link:
+                    in_progress_tasks.append(f'• <a href="{safe_link}">{_h(task)}</a>')
+                else:
+                    in_progress_tasks.append(f"• {_h(task)}")
             else:
                 in_progress_tasks.append(f"• {_h(task)}")
 
@@ -190,6 +247,10 @@ async def send_report(chat_id: int, application) -> None:
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    user_id = update.effective_user.id if update.effective_user else None
+    if not _is_allowed_chat(update.effective_chat.id) or not _is_allowed_user(user_id):
+        await update.message.reply_text("Недостаточно прав для выполнения команды.")
+        return
     try:
         await send_report(update.effective_chat.id, context.application)
     except Exception:
@@ -199,6 +260,10 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
+        user_id = update.effective_user.id if update.effective_user else None
+        if not _is_allowed_user(user_id):
+            await update.message.reply_text("Недостаточно прав для выполнения команды.")
+            return
         await update.message.reply_text(f"Chat ID: {update.effective_chat.id}")
 
 
@@ -238,6 +303,13 @@ def setup_scheduler(application) -> None:
     logger.info("Scheduler started (%s, mon 15:00)", str(REPORT_TIMEZONE))
 
 
+def shutdown_scheduler(application) -> None:
+    scheduler = application.bot_data.get("scheduler")
+    if scheduler and scheduler.running:
+        scheduler.shutdown(wait=False)
+        logger.info("Scheduler stopped")
+
+
 if __name__ == "__main__":
     _ensure_configured()
 
@@ -248,4 +320,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("chatid", chat_id))
 
     logger.info("Бот запущен. Ожидание команды /otchet")
-    app.run_polling()
+    try:
+        app.run_polling()
+    finally:
+        shutdown_scheduler(app)
