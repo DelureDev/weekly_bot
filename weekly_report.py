@@ -391,7 +391,7 @@ async def _tcp_probe(host: str, family: int, timeout_sec: float) -> tuple[bool, 
         return False, f"{type(exc).__name__}: {exc}"
 
 
-async def _https_probe(url: str, attempts: int, timeout_sec: float) -> tuple[int, int, str]:
+async def _https_probe(url: str, attempts: int, timeout_sec: float) -> tuple[int, int, Optional[float], Optional[float], str]:
     ok = 0
     fail = 0
     durations: list[float] = []
@@ -409,45 +409,56 @@ async def _https_probe(url: str, attempts: int, timeout_sec: float) -> tuple[int
             except Exception:
                 fail += 1
 
-    timing = "n/a"
+    avg_duration: Optional[float] = None
+    max_duration: Optional[float] = None
     if durations:
-        avg = sum(durations) / len(durations)
-        timing = f"avg={_format_duration_ms(avg)} max={_format_duration_ms(max(durations))}"
+        avg_duration = sum(durations) / len(durations)
+        max_duration = max(durations)
     codes = ",".join(sorted(set(status_codes))) if status_codes else "-"
-    return ok, fail, f"{timing} codes={codes}"
+    return ok, fail, avg_duration, max_duration, codes
 
 
 async def build_network_diag_text(application) -> str:
     host = NETDIAG_HOST
-    lines: list[str] = [f"Network diagnostic for {host}"]
+    lines: list[str] = [f"🌐 Диагностика сети для {host}"]
 
     try:
         a_records, aaaa_records = await _resolve_dns(host)
-    except Exception as exc:
-        lines.append(f"DNS: FAIL ({type(exc).__name__})")
+    except Exception:
+        lines.append("❌ DNS: ошибка резолва")
         a_records = []
         aaaa_records = []
     else:
-        lines.append(f"DNS A: {', '.join(a_records) if a_records else '-'}")
-        lines.append(f"DNS AAAA: {', '.join(aaaa_records) if aaaa_records else '-'}")
+        lines.append(f"✅ DNS A: {', '.join(a_records) if a_records else '-'}")
+        lines.append(f"{'✅' if aaaa_records else '⚠️'} DNS AAAA: {', '.join(aaaa_records) if aaaa_records else '-'}")
 
     tcp4_ok, tcp4_info = await _tcp_probe(host, socket.AF_INET, NETDIAG_TIMEOUT_SEC)
-    lines.append(f"TCP 443 IPv4: {'OK' if tcp4_ok else 'FAIL'} ({tcp4_info})")
+    lines.append(f"{'✅' if tcp4_ok else '❌'} TCP 443 IPv4: {'OK' if tcp4_ok else 'FAIL'} ({tcp4_info})")
+    tcp6_ok = False
 
     if aaaa_records:
         tcp6_ok, tcp6_info = await _tcp_probe(host, socket.AF_INET6, NETDIAG_TIMEOUT_SEC)
-        lines.append(f"TCP 443 IPv6: {'OK' if tcp6_ok else 'FAIL'} ({tcp6_info})")
+        lines.append(f"{'✅' if tcp6_ok else '⚠️'} TCP 443 IPv6: {'OK' if tcp6_ok else 'FAIL'} ({tcp6_info})")
     else:
-        lines.append("TCP 443 IPv6: SKIP (no AAAA)")
+        lines.append("⚠️ TCP 443 IPv6: SKIP (нет AAAA)")
 
-    ok, fail, https_info = await _https_probe(
+    ok, fail, https_avg, https_max, https_codes = await _https_probe(
         f"https://{host}",
         NETDIAG_HTTP_ATTEMPTS,
         NETDIAG_TIMEOUT_SEC,
     )
-    lines.append(f"HTTPS {host}: ok={ok} fail={fail} {https_info}")
+    if https_avg is None:
+        lines.append(f"❌ HTTPS {host}: ok={ok} fail={fail} codes={https_codes}")
+    else:
+        https_mark = "✅" if fail == 0 and https_max < 1.0 else "⚠️"
+        lines.append(
+            f"{https_mark} HTTPS {host}: ok={ok} fail={fail} "
+            f"avg={_format_duration_ms(https_avg)} max={_format_duration_ms(https_max)} codes={https_codes}"
+        )
 
     botapi_start = time.perf_counter()
+    botapi_ok = False
+    botapi_elapsed: Optional[float] = None
     try:
         await application.bot.get_me(
             connect_timeout=TG_SEND_CONNECT_TIMEOUT_SEC,
@@ -456,9 +467,20 @@ async def build_network_diag_text(application) -> str:
             pool_timeout=TG_SEND_POOL_TIMEOUT_SEC,
         )
         botapi_elapsed = time.perf_counter() - botapi_start
-        lines.append(f"Bot API getMe: OK ({_format_duration_ms(botapi_elapsed)})")
+        botapi_ok = True
+        bot_mark = "✅" if botapi_elapsed < 1.0 else "⚠️"
+        lines.append(f"{bot_mark} Bot API getMe: OK ({_format_duration_ms(botapi_elapsed)})")
     except Exception as exc:
-        lines.append(f"Bot API getMe: FAIL ({type(exc).__name__})")
+        lines.append(f"❌ Bot API getMe: FAIL ({type(exc).__name__})")
+
+    if not tcp4_ok or ok == 0 or not botapi_ok:
+        lines.append("🚨 Итог: есть критичная проблема с доступом к Telegram API.")
+    elif aaaa_records and not tcp6_ok:
+        lines.append("⚠️ Итог: IPv4 работает, IPv6 недоступен. Возможны редкие таймауты.")
+    elif fail > 0 or (https_max is not None and https_max >= 1.0) or (botapi_elapsed is not None and botapi_elapsed >= 1.0):
+        lines.append("⚠️ Итог: доступ есть, но канал нестабилен (скачки задержек).")
+    else:
+        lines.append("✅ Итог: доступ к Telegram API стабильный.")
 
     return "\n".join(lines)
 
@@ -561,16 +583,16 @@ async def netdiag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     user_id = update.effective_user.id if update.effective_user else None
     if not _is_allowed_chat(update.effective_chat.id) or not _is_allowed_user(user_id):
-        await update.message.reply_text("???????????? ???? ??? ?????????? ???????.")
+        await update.message.reply_text("Недостаточно прав для выполнения команды.")
         return
 
-    await update.message.reply_text("???????? ??????? ???????????...")
+    await update.message.reply_text("🔎 Запускаю сетевую диагностику...")
     try:
         diag_text = await build_network_diag_text(context.application)
         await update.message.reply_text(diag_text)
     except Exception:
         logger.exception("Network diagnostic failed")
-        await update.message.reply_text("?? ??????? ????????? ??????? ???????????.")
+        await update.message.reply_text("Не удалось выполнить сетевую диагностику.")
 
 
 async def scheduled_report(application) -> None:

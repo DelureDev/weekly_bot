@@ -277,14 +277,15 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 wr,
                 "build_network_diag_text",
-                new=AsyncMock(return_value="Network diagnostic for api.telegram.org"),
+                new=AsyncMock(return_value="🌐 Диагностика сети для api.telegram.org"),
             ),
         ):
             await wr.netdiag(update, context)
 
         self.assertEqual(message.reply_text.await_count, 2)
+        self.assertIn("диагностику", message.reply_text.await_args_list[0].args[0].lower())
         self.assertIn(
-            "Network diagnostic for api.telegram.org",
+            "🌐 Диагностика сети для api.telegram.org",
             message.reply_text.await_args_list[1].args[0],
         )
 
