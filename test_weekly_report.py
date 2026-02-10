@@ -245,6 +245,49 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         send_report.assert_awaited_once_with(-1003546739323, app)
 
+    async def test_netdiag_denies_unauthorized_chat(self) -> None:
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(
+            message=message,
+            effective_chat=SimpleNamespace(id=-200),
+            effective_user=SimpleNamespace(id=123),
+        )
+        context = SimpleNamespace(application=SimpleNamespace())
+
+        with (
+            patch.object(wr, "_is_allowed_chat", return_value=False),
+            patch.object(wr, "_is_allowed_user", return_value=True),
+        ):
+            await wr.netdiag(update, context)
+
+        message.reply_text.assert_awaited_once()
+
+    async def test_netdiag_replies_with_diagnostic_text(self) -> None:
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(
+            message=message,
+            effective_chat=SimpleNamespace(id=-200),
+            effective_user=SimpleNamespace(id=123),
+        )
+        context = SimpleNamespace(application=SimpleNamespace())
+
+        with (
+            patch.object(wr, "_is_allowed_chat", return_value=True),
+            patch.object(wr, "_is_allowed_user", return_value=True),
+            patch.object(
+                wr,
+                "build_network_diag_text",
+                new=AsyncMock(return_value="Network diagnostic for api.telegram.org"),
+            ),
+        ):
+            await wr.netdiag(update, context)
+
+        self.assertEqual(message.reply_text.await_count, 2)
+        self.assertIn(
+            "Network diagnostic for api.telegram.org",
+            message.reply_text.await_args_list[1].args[0],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

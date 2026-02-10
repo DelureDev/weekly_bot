@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
+import socket
 import sys
+import time
 from datetime import date, datetime, timedelta
 from html import escape as html_escape
 from threading import Lock
@@ -10,6 +12,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import gspread
+import httpx
 from google.oauth2.service_account import Credentials
 from telegram import Update
 from telegram.constants import ParseMode
@@ -73,6 +76,15 @@ TG_GET_UPDATES_READ_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_READ_TIMEOUT_S
 TG_GET_UPDATES_CONNECT_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_CONNECT_TIMEOUT_SEC", "10"))
 TG_GET_UPDATES_WRITE_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_WRITE_TIMEOUT_SEC", "30"))
 TG_GET_UPDATES_POOL_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_POOL_TIMEOUT_SEC", "10"))
+NETDIAG_HOST = os.getenv("NETDIAG_HOST", "api.telegram.org")
+try:
+    NETDIAG_HTTP_ATTEMPTS = max(1, int(os.getenv("NETDIAG_HTTP_ATTEMPTS", "3")))
+except ValueError:
+    NETDIAG_HTTP_ATTEMPTS = 3
+try:
+    NETDIAG_TIMEOUT_SEC = max(1.0, float(os.getenv("NETDIAG_TIMEOUT_SEC", "6")))
+except ValueError:
+    NETDIAG_TIMEOUT_SEC = 6.0
 
 # Cached worksheet (auth/open happens once; if fails, cache resets)
 _SHEET = None
@@ -344,6 +356,113 @@ def _split_report_for_delivery(report_text: str, limit: int = REPORT_CHUNK_SIZE)
     return chunks or _split_report_chunks(report_text, limit)
 
 
+def _format_duration_ms(seconds: float) -> str:
+    return f"{seconds * 1000:.0f}ms"
+
+
+async def _resolve_dns(host: str) -> tuple[list[str], list[str]]:
+    def _resolve() -> tuple[list[str], list[str]]:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        a_records: set[str] = set()
+        aaaa_records: set[str] = set()
+        for family, *_rest, sockaddr in infos:
+            ip = sockaddr[0]
+            if family == socket.AF_INET:
+                a_records.add(ip)
+            elif family == socket.AF_INET6:
+                aaaa_records.add(ip)
+        return sorted(a_records), sorted(aaaa_records)
+
+    return await asyncio.to_thread(_resolve)
+
+
+async def _tcp_probe(host: str, family: int, timeout_sec: float) -> tuple[bool, str]:
+    start = time.perf_counter()
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, 443, family=family),
+            timeout=timeout_sec,
+        )
+        elapsed = time.perf_counter() - start
+        writer.close()
+        await writer.wait_closed()
+        return True, _format_duration_ms(elapsed)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+async def _https_probe(url: str, attempts: int, timeout_sec: float) -> tuple[int, int, str]:
+    ok = 0
+    fail = 0
+    durations: list[float] = []
+    status_codes: list[str] = []
+
+    timeout = httpx.Timeout(timeout_sec)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        for _ in range(max(1, attempts)):
+            start = time.perf_counter()
+            try:
+                response = await client.get(url)
+                ok += 1
+                durations.append(time.perf_counter() - start)
+                status_codes.append(str(response.status_code))
+            except Exception:
+                fail += 1
+
+    timing = "n/a"
+    if durations:
+        avg = sum(durations) / len(durations)
+        timing = f"avg={_format_duration_ms(avg)} max={_format_duration_ms(max(durations))}"
+    codes = ",".join(sorted(set(status_codes))) if status_codes else "-"
+    return ok, fail, f"{timing} codes={codes}"
+
+
+async def build_network_diag_text(application) -> str:
+    host = NETDIAG_HOST
+    lines: list[str] = [f"Network diagnostic for {host}"]
+
+    try:
+        a_records, aaaa_records = await _resolve_dns(host)
+    except Exception as exc:
+        lines.append(f"DNS: FAIL ({type(exc).__name__})")
+        a_records = []
+        aaaa_records = []
+    else:
+        lines.append(f"DNS A: {', '.join(a_records) if a_records else '-'}")
+        lines.append(f"DNS AAAA: {', '.join(aaaa_records) if aaaa_records else '-'}")
+
+    tcp4_ok, tcp4_info = await _tcp_probe(host, socket.AF_INET, NETDIAG_TIMEOUT_SEC)
+    lines.append(f"TCP 443 IPv4: {'OK' if tcp4_ok else 'FAIL'} ({tcp4_info})")
+
+    if aaaa_records:
+        tcp6_ok, tcp6_info = await _tcp_probe(host, socket.AF_INET6, NETDIAG_TIMEOUT_SEC)
+        lines.append(f"TCP 443 IPv6: {'OK' if tcp6_ok else 'FAIL'} ({tcp6_info})")
+    else:
+        lines.append("TCP 443 IPv6: SKIP (no AAAA)")
+
+    ok, fail, https_info = await _https_probe(
+        f"https://{host}",
+        NETDIAG_HTTP_ATTEMPTS,
+        NETDIAG_TIMEOUT_SEC,
+    )
+    lines.append(f"HTTPS {host}: ok={ok} fail={fail} {https_info}")
+
+    botapi_start = time.perf_counter()
+    try:
+        await application.bot.get_me(
+            connect_timeout=TG_SEND_CONNECT_TIMEOUT_SEC,
+            read_timeout=TG_SEND_READ_TIMEOUT_SEC,
+            write_timeout=TG_SEND_WRITE_TIMEOUT_SEC,
+            pool_timeout=TG_SEND_POOL_TIMEOUT_SEC,
+        )
+        botapi_elapsed = time.perf_counter() - botapi_start
+        lines.append(f"Bot API getMe: OK ({_format_duration_ms(botapi_elapsed)})")
+    except Exception as exc:
+        lines.append(f"Bot API getMe: FAIL ({type(exc).__name__})")
+
+    return "\n".join(lines)
+
+
 async def _send_message_with_retry(bot, **kwargs) -> None:
     kwargs.setdefault("connect_timeout", TG_SEND_CONNECT_TIMEOUT_SEC)
     kwargs.setdefault("read_timeout", TG_SEND_READ_TIMEOUT_SEC)
@@ -436,6 +555,24 @@ async def chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Chat ID: {update.effective_chat.id}")
 
 
+async def netdiag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    user_id = update.effective_user.id if update.effective_user else None
+    if not _is_allowed_chat(update.effective_chat.id) or not _is_allowed_user(user_id):
+        await update.message.reply_text("ÐÐµÐ´Ð¾ÑÑ‚Ð°Ñ‚Ð¾Ñ‡Ð½Ð¾ Ð¿Ñ€Ð°Ð² Ð´Ð»Ñ Ð²Ñ‹Ð¿Ð¾Ð»Ð½ÐµÐ½Ð¸Ñ ÐºÐ¾Ð¼Ð°Ð½Ð´Ñ‹.")
+        return
+
+    await update.message.reply_text("Ð—Ð°Ð¿ÑƒÑÐºÐ°ÑŽ ÑÐµÑ‚ÐµÐ²ÑƒÑŽ Ð´Ð¸Ð°Ð³Ð½Ð¾ÑÑ‚Ð¸ÐºÑƒ...")
+    try:
+        diag_text = await build_network_diag_text(context.application)
+        await update.message.reply_text(diag_text)
+    except Exception:
+        logger.exception("Network diagnostic failed")
+        await update.message.reply_text("ÐÐµ ÑƒÐ´Ð°Ð»Ð¾ÑÑŒ Ð²Ñ‹Ð¿Ð¾Ð»Ð½Ð¸Ñ‚ÑŒ ÑÐµÑ‚ÐµÐ²ÑƒÑŽ Ð´Ð¸Ð°Ð³Ð½Ð¾ÑÑ‚Ð¸ÐºÑƒ.")
+
+
 async def scheduled_report(application) -> None:
     if not REPORT_CHAT_ID:
         logger.warning("REPORT_CHAT_ID не задан, авто-отправка отключена.")
@@ -499,6 +636,7 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("otchet", report))
     app.add_handler(CommandHandler("chatid", chat_id))
+    app.add_handler(CommandHandler("netdiag", netdiag))
 
     logger.info("Бот запущен. Ожидание команды /otchet")
     try:

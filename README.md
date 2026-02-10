@@ -1,4 +1,4 @@
-# weekly_bot
+﻿# weekly_bot
 
 Telegram-бот, который формирует еженедельный отчет из Google Sheets и отправляет его в Telegram.
 
@@ -6,6 +6,7 @@ Telegram-бот, который формирует еженедельный от
 
 - `/otchet` — формирует еженедельный отчет из Google Sheets
 - `/chatid` — показывает ID текущего чата
+- `/netdiag` — выводит краткую сетевую диагностику до Telegram API (DNS/TCP/HTTPS/getMe)
 - Автоотправка по расписанию каждый понедельник в 15:00 в `REPORT_TIMEZONE`
 - Опциональные ограничения доступа через `ALLOWED_CHAT_IDS` и `ALLOWED_TG_USERS`
 
@@ -49,7 +50,10 @@ pip install -r requirements.txt
 - `INTRO_TEXT` — текст вступительного сообщения
 - `REPORT_TIMEZONE` — IANA-таймзона (по умолчанию: `Europe/Moscow`)
 - `ALLOWED_CHAT_IDS` — список разрешенных chat ID через запятую для `/otchet`
-- `ALLOWED_TG_USERS` — список разрешенных user ID через запятую для `/otchet` и `/chatid`
+- `ALLOWED_TG_USERS` — список разрешенных user ID через запятую для `/otchet`, `/chatid` и `/netdiag`
+- `NETDIAG_HOST` — хост для `/netdiag` (по умолчанию: `api.telegram.org`)
+- `NETDIAG_HTTP_ATTEMPTS` — количество HTTPS-проверок в `/netdiag` (по умолчанию: `3`)
+- `NETDIAG_TIMEOUT_SEC` — таймаут проверок `/netdiag` в секундах (по умолчанию: `6`)
 
 Если `ALLOWED_CHAT_IDS` или `ALLOWED_TG_USERS` пусты, соответствующее ограничение отключено.
 
@@ -87,3 +91,4 @@ ExecStart=/home/adminos/weekly_bot/.venv/bin/python /home/adminos/weekly_bot/wee
 
 - `test_gsheets.py` — ручная проверка подключения к Google Sheets (использует env)
 - `test_telegram.py` — ручная проверка отправки в Telegram (использует env)
+
