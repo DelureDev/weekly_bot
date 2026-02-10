@@ -58,13 +58,17 @@ INTRO_TEXT = os.getenv("INTRO_TEXT", "Коллеги, подготовил еж�
 REPORT_TIMEZONE = ZoneInfo(os.getenv("REPORT_TIMEZONE", "Europe/Moscow"))
 ALLOWED_CHAT_IDS_RAW = os.getenv("ALLOWED_CHAT_IDS", "")
 ALLOWED_TG_USERS_RAW = os.getenv("ALLOWED_TG_USERS", "")
-REPORT_CHUNK_SIZE = 3500
+REPORT_CHUNK_SIZE = 3900
 SEND_RETRY_ATTEMPTS = 3
 SEND_RETRY_BASE_DELAY_SEC = 1.0
 TG_CONNECT_TIMEOUT_SEC = float(os.getenv("TG_CONNECT_TIMEOUT_SEC", "10"))
 TG_READ_TIMEOUT_SEC = float(os.getenv("TG_READ_TIMEOUT_SEC", "60"))
 TG_WRITE_TIMEOUT_SEC = float(os.getenv("TG_WRITE_TIMEOUT_SEC", "30"))
 TG_POOL_TIMEOUT_SEC = float(os.getenv("TG_POOL_TIMEOUT_SEC", "10"))
+TG_SEND_CONNECT_TIMEOUT_SEC = float(os.getenv("TG_SEND_CONNECT_TIMEOUT_SEC", "10"))
+TG_SEND_READ_TIMEOUT_SEC = float(os.getenv("TG_SEND_READ_TIMEOUT_SEC", "20"))
+TG_SEND_WRITE_TIMEOUT_SEC = float(os.getenv("TG_SEND_WRITE_TIMEOUT_SEC", "20"))
+TG_SEND_POOL_TIMEOUT_SEC = float(os.getenv("TG_SEND_POOL_TIMEOUT_SEC", "10"))
 TG_GET_UPDATES_READ_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_READ_TIMEOUT_SEC", "60"))
 TG_GET_UPDATES_CONNECT_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_CONNECT_TIMEOUT_SEC", "10"))
 TG_GET_UPDATES_WRITE_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_WRITE_TIMEOUT_SEC", "30"))
@@ -286,11 +290,65 @@ def _split_report_chunks(text: str, limit: int = REPORT_CHUNK_SIZE) -> list[str]
     return chunks or [text]
 
 
+def _split_report_for_delivery(report_text: str, limit: int = REPORT_CHUNK_SIZE) -> list[str]:
+    """Split report by sections, preserving section header in each chunk."""
+    if len(report_text) <= limit:
+        return [report_text]
+
+    sections: list[list[str]] = []
+    current_section: list[str] = []
+    for line in report_text.splitlines():
+        if not line.strip():
+            if current_section:
+                sections.append(current_section)
+                current_section = []
+            continue
+        current_section.append(line)
+    if current_section:
+        sections.append(current_section)
+
+    if not sections:
+        return _split_report_chunks(report_text, limit)
+
+    chunks: list[str] = []
+    for section in sections:
+        title = section[0]
+        entries = section[1:] or ["• —"]
+        current_lines = [title]
+
+        for entry in entries:
+            candidate = "\n".join([*current_lines, entry])
+            if len(candidate) <= limit:
+                current_lines.append(entry)
+                continue
+
+            if len(current_lines) > 1:
+                chunks.append("\n".join(current_lines))
+
+            titled_entry = f"{title}\n{entry}"
+            if len(titled_entry) <= limit:
+                current_lines = [title, entry]
+                continue
+
+            entry_room = max(1, limit - len(title) - 1)
+            start = 0
+            while start < len(entry):
+                part = entry[start : start + entry_room]
+                chunks.append(f"{title}\n{part}")
+                start += entry_room
+            current_lines = [title]
+
+        if len(current_lines) > 1:
+            chunks.append("\n".join(current_lines))
+
+    return chunks or _split_report_chunks(report_text, limit)
+
+
 async def _send_message_with_retry(bot, **kwargs) -> None:
-    kwargs.setdefault("connect_timeout", TG_CONNECT_TIMEOUT_SEC)
-    kwargs.setdefault("read_timeout", TG_READ_TIMEOUT_SEC)
-    kwargs.setdefault("write_timeout", TG_WRITE_TIMEOUT_SEC)
-    kwargs.setdefault("pool_timeout", TG_POOL_TIMEOUT_SEC)
+    kwargs.setdefault("connect_timeout", TG_SEND_CONNECT_TIMEOUT_SEC)
+    kwargs.setdefault("read_timeout", TG_SEND_READ_TIMEOUT_SEC)
+    kwargs.setdefault("write_timeout", TG_SEND_WRITE_TIMEOUT_SEC)
+    kwargs.setdefault("pool_timeout", TG_SEND_POOL_TIMEOUT_SEC)
     last_error: Optional[Exception] = None
     for attempt in range(1, SEND_RETRY_ATTEMPTS + 1):
         try:
@@ -318,7 +376,7 @@ async def send_report(chat_id: int, application) -> None:
     intro = f"{INTRO_MENTIONS} {INTRO_TEXT}".strip()
     await _send_message_with_retry(application.bot, chat_id=chat_id, text=intro)
 
-    for chunk in _split_report_chunks(report_text):
+    for chunk in _split_report_for_delivery(report_text):
         await _send_message_with_retry(
             application.bot,
             chat_id=chat_id,

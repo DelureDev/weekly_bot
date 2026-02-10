@@ -36,6 +36,24 @@ class ParseAndSanitizeTests(unittest.TestCase):
         chunks = wr._split_report_chunks(text, limit=7)
         self.assertEqual(chunks, ["line1", "line2", "line3"])
 
+    def test_split_report_for_delivery_keeps_section_context(self) -> None:
+        report = "\n".join(
+            [
+                "<b>DONE</b>",
+                "• task-1",
+                "• task-2",
+                "• task-3",
+                "",
+                "<b>WIP</b>",
+                "• task-4",
+            ]
+        )
+        chunks = wr._split_report_for_delivery(report, limit=24)
+        self.assertEqual(chunks[0], "<b>DONE</b>\n• task-1")
+        self.assertEqual(chunks[1], "<b>DONE</b>\n• task-2")
+        self.assertEqual(chunks[2], "<b>DONE</b>\n• task-3")
+        self.assertEqual(chunks[3], "<b>WIP</b>\n• task-4")
+
 
 class ReportGenerationTests(unittest.TestCase):
     def test_generate_report_filters_rows_and_sanitizes_html(self) -> None:
