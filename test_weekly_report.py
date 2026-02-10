@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import weekly_report as wr
+from telegram.error import TimedOut
 
 COL_TASK = "\u0417\u0430\u0434\u0430\u0447\u0430"
 COL_LINK = "\u0421\u0441\u044b\u043b\u043a\u0430"
@@ -29,6 +30,11 @@ class ParseAndSanitizeTests(unittest.TestCase):
         )
         self.assertIsNone(wr._safe_href("javascript:alert(1)"))
         self.assertIsNone(wr._safe_href("/relative/path"))
+
+    def test_split_report_chunks_respects_limit(self) -> None:
+        text = "line1\nline2\nline3"
+        chunks = wr._split_report_chunks(text, limit=7)
+        self.assertEqual(chunks, ["line1", "line2", "line3"])
 
 
 class ReportGenerationTests(unittest.TestCase):
@@ -133,6 +139,20 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
                 await wr.send_report(-100123, application)
 
         bot.send_message.assert_not_awaited()
+
+    async def test_send_report_retries_when_timeout_happens(self) -> None:
+        bot = SimpleNamespace(send_message=AsyncMock(side_effect=[None, TimedOut("timeout"), None]))
+        application = SimpleNamespace(bot=bot)
+
+        with (
+            patch.object(wr, "INTRO_MENTIONS", "@u1"),
+            patch.object(wr, "INTRO_TEXT", "intro"),
+            patch.object(wr.asyncio, "to_thread", new=AsyncMock(return_value="report text")),
+            patch.object(wr.asyncio, "sleep", new=AsyncMock()),
+        ):
+            await wr.send_report(-100123, application)
+
+        self.assertEqual(bot.send_message.await_count, 3)
 
     async def test_report_denies_unauthorized_chat(self) -> None:
         message = SimpleNamespace(reply_text=AsyncMock())

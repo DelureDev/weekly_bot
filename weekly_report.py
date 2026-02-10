@@ -13,6 +13,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import TimedOut
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -55,6 +56,9 @@ INTRO_TEXT = os.getenv("INTRO_TEXT", "Коллеги, подготовил еж�
 REPORT_TIMEZONE = ZoneInfo(os.getenv("REPORT_TIMEZONE", "Europe/Moscow"))
 ALLOWED_CHAT_IDS_RAW = os.getenv("ALLOWED_CHAT_IDS", "")
 ALLOWED_TG_USERS_RAW = os.getenv("ALLOWED_TG_USERS", "")
+REPORT_CHUNK_SIZE = 3500
+SEND_RETRY_ATTEMPTS = 3
+SEND_RETRY_BASE_DELAY_SEC = 1.0
 
 # Cached worksheet (auth/open happens once; if fails, cache resets)
 _SHEET = None
@@ -241,17 +245,73 @@ def generate_report_threadsafe() -> str:
         return generate_report()
 
 
+def _split_report_chunks(text: str, limit: int = REPORT_CHUNK_SIZE) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines():
+        candidate = line if not current else f"{current}\n{line}"
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        if len(line) <= limit:
+            current = line
+            continue
+
+        start = 0
+        while start < len(line):
+            chunks.append(line[start : start + limit])
+            start += limit
+
+    if current:
+        chunks.append(current)
+
+    return chunks or [text]
+
+
+async def _send_message_with_retry(bot, **kwargs) -> None:
+    last_error: Optional[Exception] = None
+    for attempt in range(1, SEND_RETRY_ATTEMPTS + 1):
+        try:
+            await bot.send_message(**kwargs)
+            return
+        except TimedOut as exc:
+            last_error = exc
+            if attempt >= SEND_RETRY_ATTEMPTS:
+                break
+            delay = SEND_RETRY_BASE_DELAY_SEC * attempt
+            logger.warning(
+                "Telegram send timeout (attempt %s/%s). Retry in %.1fs",
+                attempt,
+                SEND_RETRY_ATTEMPTS,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    if last_error is not None:
+        raise last_error
+
+
 async def send_report(chat_id: int, application) -> None:
     report_text = await asyncio.to_thread(generate_report_threadsafe)
     intro = f"{INTRO_MENTIONS} {INTRO_TEXT}".strip()
-    await application.bot.send_message(chat_id=chat_id, text=intro)
+    await _send_message_with_retry(application.bot, chat_id=chat_id, text=intro)
 
-    await application.bot.send_message(
-        chat_id=chat_id,
-        text=report_text,
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
+    for chunk in _split_report_chunks(report_text):
+        await _send_message_with_retry(
+            application.bot,
+            chat_id=chat_id,
+            text=chunk,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
 
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
