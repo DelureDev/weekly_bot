@@ -40,6 +40,8 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger("weekly_report")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # --- Config (ENV) ---
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
