@@ -61,6 +61,14 @@ ALLOWED_TG_USERS_RAW = os.getenv("ALLOWED_TG_USERS", "")
 REPORT_CHUNK_SIZE = 3500
 SEND_RETRY_ATTEMPTS = 3
 SEND_RETRY_BASE_DELAY_SEC = 1.0
+TG_CONNECT_TIMEOUT_SEC = float(os.getenv("TG_CONNECT_TIMEOUT_SEC", "10"))
+TG_READ_TIMEOUT_SEC = float(os.getenv("TG_READ_TIMEOUT_SEC", "60"))
+TG_WRITE_TIMEOUT_SEC = float(os.getenv("TG_WRITE_TIMEOUT_SEC", "30"))
+TG_POOL_TIMEOUT_SEC = float(os.getenv("TG_POOL_TIMEOUT_SEC", "10"))
+TG_GET_UPDATES_READ_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_READ_TIMEOUT_SEC", "60"))
+TG_GET_UPDATES_CONNECT_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_CONNECT_TIMEOUT_SEC", "10"))
+TG_GET_UPDATES_WRITE_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_WRITE_TIMEOUT_SEC", "30"))
+TG_GET_UPDATES_POOL_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_POOL_TIMEOUT_SEC", "10"))
 
 # Cached worksheet (auth/open happens once; if fails, cache resets)
 _SHEET = None
@@ -279,6 +287,10 @@ def _split_report_chunks(text: str, limit: int = REPORT_CHUNK_SIZE) -> list[str]
 
 
 async def _send_message_with_retry(bot, **kwargs) -> None:
+    kwargs.setdefault("connect_timeout", TG_CONNECT_TIMEOUT_SEC)
+    kwargs.setdefault("read_timeout", TG_READ_TIMEOUT_SEC)
+    kwargs.setdefault("write_timeout", TG_WRITE_TIMEOUT_SEC)
+    kwargs.setdefault("pool_timeout", TG_POOL_TIMEOUT_SEC)
     last_error: Optional[Exception] = None
     for attempt in range(1, SEND_RETRY_ATTEMPTS + 1):
         try:
@@ -385,7 +397,19 @@ def shutdown_scheduler(application) -> None:
 if __name__ == "__main__":
     _ensure_configured()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .connect_timeout(TG_CONNECT_TIMEOUT_SEC)
+        .read_timeout(TG_READ_TIMEOUT_SEC)
+        .write_timeout(TG_WRITE_TIMEOUT_SEC)
+        .pool_timeout(TG_POOL_TIMEOUT_SEC)
+        .get_updates_connect_timeout(TG_GET_UPDATES_CONNECT_TIMEOUT_SEC)
+        .get_updates_read_timeout(TG_GET_UPDATES_READ_TIMEOUT_SEC)
+        .get_updates_write_timeout(TG_GET_UPDATES_WRITE_TIMEOUT_SEC)
+        .get_updates_pool_timeout(TG_GET_UPDATES_POOL_TIMEOUT_SEC)
+        .build()
+    )
     setup_scheduler(app)
 
     app.add_handler(CommandHandler("otchet", report))
