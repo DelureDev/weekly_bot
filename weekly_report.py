@@ -374,16 +374,43 @@ async def _send_message_with_retry(bot, **kwargs) -> None:
 async def send_report(chat_id: int, application) -> None:
     report_text = await asyncio.to_thread(generate_report_threadsafe)
     intro = f"{INTRO_MENTIONS} {INTRO_TEXT}".strip()
-    await _send_message_with_retry(application.bot, chat_id=chat_id, text=intro)
+    chunks = _split_report_for_delivery(report_text)
+    if intro and chunks:
+        chunks[0] = f"{_h(intro)}\n\n{chunks[0]}"
 
-    for chunk in _split_report_for_delivery(report_text):
-        await _send_message_with_retry(
-            application.bot,
-            chat_id=chat_id,
-            text=chunk,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
+    sent_chunks = 0
+    failed_chunks = 0
+
+    for idx, chunk in enumerate(chunks, start=1):
+        try:
+            await _send_message_with_retry(
+                application.bot,
+                chat_id=chat_id,
+                text=chunk,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            sent_chunks += 1
+        except TimedOut:
+            failed_chunks += 1
+            logger.error(
+                "Report chunk send failed after retries (%s/%s)",
+                idx,
+                len(chunks),
+            )
+
+    if sent_chunks == 0:
+        raise TimedOut("Timed out while sending all report chunks")
+
+    if failed_chunks > 0:
+        warning_text = (
+            f"⚠️ Из-за нестабильной сети не отправлено {failed_chunks} "
+            f"из {len(chunks)} частей отчета."
         )
+        try:
+            await _send_message_with_retry(application.bot, chat_id=chat_id, text=warning_text)
+        except TimedOut:
+            logger.warning("Failed to deliver partial-send warning to chat %s", chat_id)
 
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
