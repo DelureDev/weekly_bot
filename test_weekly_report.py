@@ -127,7 +127,7 @@ class ReportGenerationTests(unittest.TestCase):
 
 
 class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_send_report_sends_intro_in_first_chunk(self) -> None:
+    async def test_send_report_sends_intro_then_report(self) -> None:
         bot = SimpleNamespace(send_message=AsyncMock())
         application = SimpleNamespace(bot=bot)
 
@@ -138,13 +138,16 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         ):
             await wr.send_report(-100123, application)
 
-        self.assertEqual(bot.send_message.await_count, 1)
+        self.assertEqual(bot.send_message.await_count, 2)
         first = bot.send_message.await_args_list[0].kwargs
+        second = bot.send_message.await_args_list[1].kwargs
         self.assertEqual(first["chat_id"], -100123)
-        self.assertIn("@u1 @u2 intro", first["text"])
-        self.assertIn("report text", first["text"])
-        self.assertEqual(first["parse_mode"], wr.ParseMode.HTML)
-        self.assertTrue(first["disable_web_page_preview"])
+        self.assertEqual(first["text"], "@u1 @u2 intro")
+        self.assertNotIn("parse_mode", first)
+        self.assertEqual(second["chat_id"], -100123)
+        self.assertEqual(second["text"], "report text")
+        self.assertEqual(second["parse_mode"], wr.ParseMode.HTML)
+        self.assertTrue(second["disable_web_page_preview"])
 
     async def test_send_report_does_not_send_messages_when_generation_fails(self) -> None:
         bot = SimpleNamespace(send_message=AsyncMock())
@@ -157,7 +160,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         bot.send_message.assert_not_awaited()
 
     async def test_send_report_retries_when_timeout_happens(self) -> None:
-        bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("timeout"), None]))
+        bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("timeout"), None, None]))
         application = SimpleNamespace(bot=bot)
 
         with (
@@ -168,12 +171,13 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         ):
             await wr.send_report(-100123, application)
 
-        self.assertEqual(bot.send_message.await_count, 2)
+        self.assertEqual(bot.send_message.await_count, 3)
 
     async def test_send_report_continues_when_one_chunk_fails(self) -> None:
         bot = SimpleNamespace(
             send_message=AsyncMock(
                 side_effect=[
+                    None,  # intro ok
                     None,  # first chunk ok
                     TimedOut("t1"),
                     TimedOut("t2"),
@@ -193,7 +197,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         ):
             await wr.send_report(-100123, application)
 
-        self.assertEqual(bot.send_message.await_count, 5)
+        self.assertEqual(bot.send_message.await_count, 6)
 
     async def test_report_denies_unauthorized_chat(self) -> None:
         message = SimpleNamespace(reply_text=AsyncMock())

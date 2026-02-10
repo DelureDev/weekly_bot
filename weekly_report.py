@@ -375,8 +375,8 @@ async def send_report(chat_id: int, application) -> None:
     report_text = await asyncio.to_thread(generate_report_threadsafe)
     intro = f"{INTRO_MENTIONS} {INTRO_TEXT}".strip()
     chunks = _split_report_for_delivery(report_text)
-    if intro and chunks:
-        chunks[0] = f"{_h(intro)}\n\n{chunks[0]}"
+    if intro:
+        await _send_message_with_retry(application.bot, chat_id=chat_id, text=intro)
 
     sent_chunks = 0
     failed_chunks = 0
