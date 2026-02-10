@@ -561,16 +561,16 @@ async def netdiag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     user_id = update.effective_user.id if update.effective_user else None
     if not _is_allowed_chat(update.effective_chat.id) or not _is_allowed_user(user_id):
-        await update.message.reply_text("ÐÐµÐ´Ð¾ÑÑ‚Ð°Ñ‚Ð¾Ñ‡Ð½Ð¾ Ð¿Ñ€Ð°Ð² Ð´Ð»Ñ Ð²Ñ‹Ð¿Ð¾Ð»Ð½ÐµÐ½Ð¸Ñ ÐºÐ¾Ð¼Ð°Ð½Ð´Ñ‹.")
+        await update.message.reply_text("???????????? ???? ??? ?????????? ???????.")
         return
 
-    await update.message.reply_text("Ð—Ð°Ð¿ÑƒÑÐºÐ°ÑŽ ÑÐµÑ‚ÐµÐ²ÑƒÑŽ Ð´Ð¸Ð°Ð³Ð½Ð¾ÑÑ‚Ð¸ÐºÑƒ...")
+    await update.message.reply_text("???????? ??????? ???????????...")
     try:
         diag_text = await build_network_diag_text(context.application)
         await update.message.reply_text(diag_text)
     except Exception:
         logger.exception("Network diagnostic failed")
-        await update.message.reply_text("ÐÐµ ÑƒÐ´Ð°Ð»Ð¾ÑÑŒ Ð²Ñ‹Ð¿Ð¾Ð»Ð½Ð¸Ñ‚ÑŒ ÑÐµÑ‚ÐµÐ²ÑƒÑŽ Ð´Ð¸Ð°Ð³Ð½Ð¾ÑÑ‚Ð¸ÐºÑƒ.")
+        await update.message.reply_text("?? ??????? ????????? ??????? ???????????.")
 
 
 async def scheduled_report(application) -> None:
