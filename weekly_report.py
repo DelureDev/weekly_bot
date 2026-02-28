@@ -14,9 +14,9 @@ from zoneinfo import ZoneInfo
 import gspread
 import httpx
 from google.oauth2.service_account import Credentials
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.constants import ParseMode
-from telegram.error import TimedOut
+from telegram.error import RetryAfter, TimedOut
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -225,7 +225,7 @@ def generate_report() -> str:
                 logger.warning("Некорректная дата закрытия: %s", date_closed)
 
         # Done: previous week
-        if status == "Выполнено" and date_closed_dt and done_start <= date_closed_dt <= done_end:
+        if status.lower() == "выполнено" and date_closed_dt and done_start <= date_closed_dt <= done_end:
             if link:
                 safe_link = _safe_href(link)
                 if safe_link:
@@ -236,7 +236,7 @@ def generate_report() -> str:
                 done_tasks.append(f"• {_h(task)}")
 
         # In progress: all tasks with status "В работе"
-        elif status == "В работе":
+        elif status.lower() == "в работе":
             if link:
                 safe_link = _safe_href(link)
                 if safe_link:
@@ -495,6 +495,18 @@ async def _send_message_with_retry(bot, **kwargs) -> None:
         try:
             await bot.send_message(**kwargs)
             return
+        except RetryAfter as exc:
+            last_error = exc
+            if attempt >= SEND_RETRY_ATTEMPTS:
+                break
+            delay = exc.retry_after + 0.5
+            logger.warning(
+                "Telegram rate limit (attempt %s/%s). Retry in %.1fs",
+                attempt,
+                SEND_RETRY_ATTEMPTS,
+                delay,
+            )
+            await asyncio.sleep(delay)
         except TimedOut as exc:
             last_error = exc
             if attempt >= SEND_RETRY_ATTEMPTS:
@@ -532,7 +544,9 @@ async def send_report(chat_id: int, application) -> None:
                 disable_web_page_preview=True,
             )
             sent_chunks += 1
-        except TimedOut:
+            if idx < len(chunks):
+                await asyncio.sleep(0.35)
+        except (TimedOut, RetryAfter):
             failed_chunks += 1
             logger.error(
                 "Report chunk send failed after retries (%s/%s)",
@@ -552,6 +566,26 @@ async def send_report(chat_id: int, application) -> None:
             await _send_message_with_retry(application.bot, chat_id=chat_id, text=warning_text)
         except TimedOut:
             logger.warning("Failed to deliver partial-send warning to chat %s", chat_id)
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    text = (
+        "👋 Привет! Я бот еженедельной отчётности.\n\n"
+        "Каждый понедельник в 15:00 я автоматически отправляю отчёт о выполненных "
+        "и текущих задачах на основе данных из таблицы.\n\n"
+        "<b>Команды:</b>\n"
+        "/otchet — сформировать и отправить отчёт прямо сейчас\n"
+        "/chatid — узнать ID текущего чата\n"
+        "/netdiag — диагностика подключения к Telegram API\n"
+        "/help — показать это сообщение"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await start(update, context)
 
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -595,6 +629,30 @@ async def netdiag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Не удалось выполнить сетевую диагностику.")
 
 
+async def scheduled_reminder(application) -> None:
+    if not REPORT_CHAT_ID:
+        logger.warning("REPORT_CHAT_ID не задан, напоминание отключено.")
+        return
+
+    try:
+        chat_id_int = int(REPORT_CHAT_ID)
+    except ValueError:
+        logger.error("REPORT_CHAT_ID должен быть числом, сейчас: %r", REPORT_CHAT_ID)
+        return
+
+    try:
+        await _send_message_with_retry(
+            application.bot,
+            chat_id=chat_id_int,
+            text=(
+                "📋 Напоминание: обновите статусы задач в таблице до понедельника. "
+                "Отчёт будет отправлен в понедельник в 15:00."
+            ),
+        )
+    except Exception as exc:
+        logger.exception("Ошибка при отправке напоминания: %s", exc)
+
+
 async def scheduled_report(application) -> None:
     if not REPORT_CHAT_ID:
         logger.warning("REPORT_CHAT_ID не задан, авто-отправка отключена.")
@@ -619,16 +677,23 @@ def setup_scheduler(application) -> None:
     """
     scheduler = BackgroundScheduler(timezone=REPORT_TIMEZONE)
 
-    def _job():
+    def _report_job():
         application.create_task(scheduled_report(application))
 
+    def _reminder_job():
+        application.create_task(scheduled_reminder(application))
+
     scheduler.add_job(
-        _job,
+        _report_job,
         CronTrigger(day_of_week="mon", hour=15, minute=0, timezone=REPORT_TIMEZONE),
+    )
+    scheduler.add_job(
+        _reminder_job,
+        CronTrigger(day_of_week="fri", hour=16, minute=0, timezone=REPORT_TIMEZONE),
     )
     scheduler.start()
     application.bot_data["scheduler"] = scheduler
-    logger.info("Scheduler started (%s, mon 15:00)", str(REPORT_TIMEZONE))
+    logger.info("Scheduler started (%s, mon 15:00 report / fri 16:00 reminder)", str(REPORT_TIMEZONE))
 
 
 def shutdown_scheduler(application) -> None:
@@ -636,6 +701,16 @@ def shutdown_scheduler(application) -> None:
     if scheduler and scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("Scheduler stopped")
+
+
+async def _post_init(application) -> None:
+    await application.bot.set_my_commands([
+        BotCommand("otchet", "Сформировать и отправить отчёт"),
+        BotCommand("chatid", "Узнать ID текущего чата"),
+        BotCommand("netdiag", "Диагностика подключения к Telegram API"),
+        BotCommand("help", "Показать справку"),
+    ])
+    logger.info("BotFather commands registered")
 
 
 if __name__ == "__main__":
@@ -652,15 +727,18 @@ if __name__ == "__main__":
         .get_updates_read_timeout(TG_GET_UPDATES_READ_TIMEOUT_SEC)
         .get_updates_write_timeout(TG_GET_UPDATES_WRITE_TIMEOUT_SEC)
         .get_updates_pool_timeout(TG_GET_UPDATES_POOL_TIMEOUT_SEC)
+        .post_init(_post_init)
         .build()
     )
     setup_scheduler(app)
 
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("otchet", report))
     app.add_handler(CommandHandler("chatid", chat_id))
     app.add_handler(CommandHandler("netdiag", netdiag))
 
-    logger.info("Бот запущен. Ожидание команды /otchet")
+    logger.info("Бот запущен. Ожидание команд.")
     try:
         app.run_polling()
     finally:
