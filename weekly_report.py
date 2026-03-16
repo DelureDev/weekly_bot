@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from html import escape as html_escape
 from threading import Lock
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -85,6 +85,18 @@ try:
     NETDIAG_TIMEOUT_SEC = max(1.0, float(os.getenv("NETDIAG_TIMEOUT_SEC", "6")))
 except ValueError:
     NETDIAG_TIMEOUT_SEC = 6.0
+
+# --- Proxy (SOCKS5) ---
+_PROXY_HOST = os.getenv("PROXY_HOST", "")
+_PROXY_PORT = os.getenv("PROXY_PORT", "")
+_PROXY_LOGIN = os.getenv("PROXY_LOGIN", "")
+_PROXY_PASS = os.getenv("PROXY_PASS", "")
+PROXY_URL: Optional[str] = None
+if _PROXY_HOST and _PROXY_PORT:
+    if _PROXY_LOGIN and _PROXY_PASS:
+        PROXY_URL = f"socks5://{quote(_PROXY_LOGIN, safe='')}:{quote(_PROXY_PASS, safe='')}@{_PROXY_HOST}:{_PROXY_PORT}"
+    else:
+        PROXY_URL = f"socks5://{_PROXY_HOST}:{_PROXY_PORT}"
 
 # Cached worksheet (auth/open happens once; if fails, cache resets)
 _SHEET = None
@@ -398,7 +410,7 @@ async def _https_probe(url: str, attempts: int, timeout_sec: float) -> tuple[int
     status_codes: list[str] = []
 
     timeout = httpx.Timeout(timeout_sec)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, proxy=PROXY_URL) as client:
         for _ in range(max(1, attempts)):
             start = time.perf_counter()
             try:
@@ -716,7 +728,12 @@ async def _post_init(application) -> None:
 if __name__ == "__main__":
     _ensure_configured()
 
-    app = (
+    if PROXY_URL:
+        # Log proxy without credentials for safety
+        _proxy_log = PROXY_URL.split("@")[-1] if "@" in PROXY_URL else PROXY_URL
+        logger.info("SOCKS5 proxy enabled: socks5://%s", _proxy_log)
+
+    builder = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .connect_timeout(TG_CONNECT_TIMEOUT_SEC)
@@ -728,8 +745,10 @@ if __name__ == "__main__":
         .get_updates_write_timeout(TG_GET_UPDATES_WRITE_TIMEOUT_SEC)
         .get_updates_pool_timeout(TG_GET_UPDATES_POOL_TIMEOUT_SEC)
         .post_init(_post_init)
-        .build()
     )
+    if PROXY_URL:
+        builder = builder.proxy(PROXY_URL).get_updates_proxy(PROXY_URL)
+    app = builder.build()
     setup_scheduler(app)
 
     app.add_handler(CommandHandler("start", start))
