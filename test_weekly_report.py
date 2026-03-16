@@ -3,8 +3,9 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import weekly_report as wr
 from telegram.error import TimedOut
+
+import weekly_report as wr
 
 COL_TASK = "\u0417\u0430\u0434\u0430\u0447\u0430"
 COL_LINK = "\u0421\u0441\u044b\u043b\u043a\u0430"

@@ -1,7 +1,9 @@
 import asyncio
+import locale
 import logging
 import os
 import socket
+import subprocess
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -13,24 +15,19 @@ from zoneinfo import ZoneInfo
 
 import gspread
 import httpx
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from google.oauth2.service_account import Credentials
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TimedOut
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-
-import locale
-
 # --- Locale (best effort) ---
 try:
     locale.setlocale(locale.LC_TIME, "ru_RU.UTF-8")
 except locale.Error:
     try:
-        import subprocess
-
         subprocess.run(["locale-gen", "ru_RU.UTF-8"], check=False)
         locale.setlocale(locale.LC_TIME, "ru_RU.UTF-8")
     except Exception:
@@ -50,7 +47,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 CREDS_FILE = os.getenv("CREDS_FILE", "credentials.json")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-SHEET_NAME = os.getenv("SHEET_NAME", "Список задач (2026)")
+SHEET_NAME = os.getenv("SHEET_NAME", f"Список задач ({datetime.now().year})")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID")  # chat id for scheduled report (optional)
@@ -403,7 +400,9 @@ async def _tcp_probe(host: str, port: int, family: int, timeout_sec: float) -> t
         return False, f"{type(exc).__name__}: {exc}"
 
 
-async def _https_probe(url: str, attempts: int, timeout_sec: float) -> tuple[int, int, Optional[float], Optional[float], str]:
+async def _https_probe(
+    url: str, attempts: int, timeout_sec: float
+) -> tuple[int, int, Optional[float], Optional[float], str]:
     ok = 0
     fail = 0
     durations: list[float] = []
@@ -447,7 +446,8 @@ async def build_network_diag_text(application) -> str:
     else:
         dns_suffix = " (прямой)" if proxy_active else ""
         lines.append(f"✅ DNS A{dns_suffix}: {', '.join(a_records) if a_records else '-'}")
-        lines.append(f"{'✅' if aaaa_records else '⚠️'} DNS AAAA{dns_suffix}: {', '.join(aaaa_records) if aaaa_records else '-'}")
+        aaaa_str = ', '.join(aaaa_records) if aaaa_records else '-'
+        lines.append(f"{'✅' if aaaa_records else '⚠️'} DNS AAAA{dns_suffix}: {aaaa_str}")
 
     # TCP: probe proxy reachability when proxy is active, direct Telegram otherwise
     tcp4_ok = False
@@ -512,7 +512,9 @@ async def build_network_diag_text(application) -> str:
         lines.append("🚨 Итог: есть критичная проблема с доступом к Telegram API.")
     elif not proxy_active and aaaa_records and not tcp6_ok:
         lines.append("⚠️ Итог: IPv4 работает, IPv6 недоступен. Возможны редкие таймауты.")
-    elif fail > 0 or (https_max is not None and https_max >= 1.0) or (botapi_elapsed is not None and botapi_elapsed >= 1.0):
+    elif fail > 0 or (https_max is not None and https_max >= 1.0) or (
+        botapi_elapsed is not None and botapi_elapsed >= 1.0
+    ):
         lines.append("⚠️ Итог: доступ есть, но канал нестабилен (скачки задержек).")
     else:
         lines.append("✅ Итог: доступ к Telegram API стабильный.")

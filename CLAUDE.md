@@ -9,6 +9,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python3 weekly_report.py
 ```
 
+**Lint:**
+```bash
+ruff check .
+```
+
 **Validate syntax (no runtime deps needed):**
 ```bash
 python3 -m py_compile weekly_report.py test_gsheets.py test_telegram.py
