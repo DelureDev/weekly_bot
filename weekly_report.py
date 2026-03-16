@@ -388,11 +388,11 @@ async def _resolve_dns(host: str) -> tuple[list[str], list[str]]:
     return await asyncio.to_thread(_resolve)
 
 
-async def _tcp_probe(host: str, family: int, timeout_sec: float) -> tuple[bool, str]:
+async def _tcp_probe(host: str, port: int, family: int, timeout_sec: float) -> tuple[bool, str]:
     start = time.perf_counter()
     try:
         _reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, 443, family=family),
+            asyncio.open_connection(host, port, family=family),
             timeout=timeout_sec,
         )
         elapsed = time.perf_counter() - start
@@ -432,8 +432,12 @@ async def _https_probe(url: str, attempts: int, timeout_sec: float) -> tuple[int
 
 async def build_network_diag_text(application) -> str:
     host = NETDIAG_HOST
+    proxy_active = PROXY_URL is not None
     lines: list[str] = [f"🌐 Диагностика сети для {host}"]
+    if proxy_active:
+        lines.append(f"🔀 Прокси: {_PROXY_HOST}:{_PROXY_PORT}")
 
+    # DNS is always a direct check; label it so when proxy is active
     try:
         a_records, aaaa_records = await _resolve_dns(host)
     except Exception:
@@ -441,19 +445,36 @@ async def build_network_diag_text(application) -> str:
         a_records = []
         aaaa_records = []
     else:
-        lines.append(f"✅ DNS A: {', '.join(a_records) if a_records else '-'}")
-        lines.append(f"{'✅' if aaaa_records else '⚠️'} DNS AAAA: {', '.join(aaaa_records) if aaaa_records else '-'}")
+        dns_suffix = " (прямой)" if proxy_active else ""
+        lines.append(f"✅ DNS A{dns_suffix}: {', '.join(a_records) if a_records else '-'}")
+        lines.append(f"{'✅' if aaaa_records else '⚠️'} DNS AAAA{dns_suffix}: {', '.join(aaaa_records) if aaaa_records else '-'}")
 
-    tcp4_ok, tcp4_info = await _tcp_probe(host, socket.AF_INET, NETDIAG_TIMEOUT_SEC)
-    lines.append(f"{'✅' if tcp4_ok else '❌'} TCP 443 IPv4: {'OK' if tcp4_ok else 'FAIL'} ({tcp4_info})")
+    # TCP: probe proxy reachability when proxy is active, direct Telegram otherwise
+    tcp4_ok = False
     tcp6_ok = False
-
-    if aaaa_records:
-        tcp6_ok, tcp6_info = await _tcp_probe(host, socket.AF_INET6, NETDIAG_TIMEOUT_SEC)
-        lines.append(f"{'✅' if tcp6_ok else '⚠️'} TCP 443 IPv6: {'OK' if tcp6_ok else 'FAIL'} ({tcp6_info})")
+    proxy_tcp_ok = False
+    if proxy_active:
+        try:
+            proxy_port_int = int(_PROXY_PORT)
+        except ValueError:
+            proxy_port_int = 0
+        proxy_tcp_ok, proxy_tcp_info = await _tcp_probe(
+            _PROXY_HOST, proxy_port_int, socket.AF_INET, NETDIAG_TIMEOUT_SEC
+        )
+        lines.append(
+            f"{'✅' if proxy_tcp_ok else '❌'} TCP прокси {_PROXY_HOST}:{_PROXY_PORT}: "
+            f"{'OK' if proxy_tcp_ok else 'FAIL'} ({proxy_tcp_info})"
+        )
     else:
-        lines.append("⚠️ TCP 443 IPv6: SKIP (нет AAAA)")
+        tcp4_ok, tcp4_info = await _tcp_probe(host, 443, socket.AF_INET, NETDIAG_TIMEOUT_SEC)
+        lines.append(f"{'✅' if tcp4_ok else '❌'} TCP 443 IPv4: {'OK' if tcp4_ok else 'FAIL'} ({tcp4_info})")
+        if aaaa_records:
+            tcp6_ok, tcp6_info = await _tcp_probe(host, 443, socket.AF_INET6, NETDIAG_TIMEOUT_SEC)
+            lines.append(f"{'✅' if tcp6_ok else '⚠️'} TCP 443 IPv6: {'OK' if tcp6_ok else 'FAIL'} ({tcp6_info})")
+        else:
+            lines.append("⚠️ TCP 443 IPv6: SKIP (нет AAAA)")
 
+    # HTTPS and Bot API probes go through proxy when configured
     ok, fail, https_avg, https_max, https_codes = await _https_probe(
         f"https://{host}",
         NETDIAG_HTTP_ATTEMPTS,
@@ -485,9 +506,11 @@ async def build_network_diag_text(application) -> str:
     except Exception as exc:
         lines.append(f"❌ Bot API getMe: FAIL ({type(exc).__name__})")
 
-    if not tcp4_ok or ok == 0 or not botapi_ok:
+    # Summary
+    tcp_ok_for_summary = proxy_tcp_ok if proxy_active else tcp4_ok
+    if not tcp_ok_for_summary or ok == 0 or not botapi_ok:
         lines.append("🚨 Итог: есть критичная проблема с доступом к Telegram API.")
-    elif aaaa_records and not tcp6_ok:
+    elif not proxy_active and aaaa_records and not tcp6_ok:
         lines.append("⚠️ Итог: IPv4 работает, IPv6 недоступен. Возможны редкие таймауты.")
     elif fail > 0 or (https_max is not None and https_max >= 1.0) or (botapi_elapsed is not None and botapi_elapsed >= 1.0):
         lines.append("⚠️ Итог: доступ есть, но канал нестабилен (скачки задержек).")
