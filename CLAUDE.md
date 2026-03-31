@@ -34,7 +34,7 @@ python3 -m unittest test_weekly_report.ParseAndSanitizeTests.test_safe_href_allo
 SPREADSHEET_ID=... CREDS_FILE=credentials.json python3 test_gsheets.py
 ```
 
-**Smoke-test Telegram send:**
+**Smoke-test MAX send:**
 ```bash
 BOT_TOKEN=... CHAT_ID=... python3 test_telegram.py
 ```
@@ -44,8 +44,8 @@ BOT_TOKEN=... CHAT_ID=... python3 test_telegram.py
 The entire bot lives in a single file: `weekly_report.py`. There is no package structure.
 
 **Data flow:**
-1. `ApplicationBuilder` (python-telegram-bot) creates the bot with all timeout settings from env vars.
-2. `BackgroundScheduler` (APScheduler) runs in a separate thread, fires coroutines via `application.create_task()` on a cron schedule: Monday 15:00 (report) and Friday 16:00 (reminder).
+1. `Bot` + `Dispatcher` (maxapi) create the bot pointed at the MAX API base URL `platform-api.max.ru`.
+2. `AsyncIOScheduler` (APScheduler) runs in the same event loop, fires coroutines on a cron schedule: Monday 15:00 (report) and Friday 16:00 (reminder).
 3. On `/otchet` or scheduled trigger → `send_report()` → `generate_report_threadsafe()` (thread-safe via `_REPORT_LOCK`) → `generate_report()` reads Google Sheets via `gspread`.
 4. The worksheet is cached in `_SHEET` (guarded by `_SHEET_LOCK`); on read failure, the cache is reset to `None` so the next call re-authenticates.
 5. Report text is HTML-escaped (`_h`, `_h_attr`, `_safe_href`) and split into ≤3900-char chunks by `_split_report_for_delivery`, which preserves section headers in each chunk. Each chunk is sent with retry logic in `_send_message_with_retry` (handles `RetryAfter` and `TimedOut`).
@@ -59,15 +59,15 @@ The entire bot lives in a single file: `weekly_report.py`. There is no package s
 
 **Access control:**
 - `ALLOWED_CHAT_IDS` gates `/otchet` and `/netdiag` by chat.
-- `ALLOWED_TG_USERS` gates `/otchet`, `/chatid`, and `/netdiag` by user.
+- `ALLOWED_USERS` gates `/otchet`, `/chatid`, and `/netdiag` by user.
 - Empty env var = no restriction for that dimension.
 
 **Network diagnostics (`/netdiag`):**
-- `build_network_diag_text()` probes DNS, TCP (IPv4/IPv6 on port 443), HTTPS, and Bot API `getMe` — all using configurable timeouts from env.
+- `build_network_diag_text()` probes DNS, TCP (IPv4/IPv6 on port 443), HTTPS, and Bot API `getMe` against `platform-api.max.ru` — all using configurable timeouts from env.
 
 ## Required env vars
 
-- `BOT_TOKEN` — Telegram bot token
+- `BOT_TOKEN` — MAX bot token
 - `SPREADSHEET_ID` — Google Sheets document ID
 - `CREDS_FILE` — path to Google service account JSON (default: `credentials.json`)
 
