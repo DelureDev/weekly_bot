@@ -34,7 +34,7 @@ python3 -m unittest test_weekly_report.ParseAndSanitizeTests.test_safe_href_allo
 SPREADSHEET_ID=... CREDS_FILE=credentials.json python3 test_gsheets.py
 ```
 
-**Smoke-test MAX send:**
+**Smoke-test Telegram send (legacy):**
 ```bash
 BOT_TOKEN=... CHAT_ID=... python3 test_telegram.py
 ```
@@ -48,7 +48,7 @@ The entire bot lives in a single file: `weekly_report.py`. There is no package s
 2. `AsyncIOScheduler` (APScheduler) runs in the same event loop, fires coroutines on a cron schedule: Monday 15:00 (report) and Friday 16:00 (reminder).
 3. On `/otchet` or scheduled trigger → `send_report()` → `generate_report_threadsafe()` (thread-safe via `_REPORT_LOCK`) → `generate_report()` reads Google Sheets via `gspread`.
 4. The worksheet is cached in `_SHEET` (guarded by `_SHEET_LOCK`); on read failure, the cache is reset to `None` so the next call re-authenticates.
-5. Report text is HTML-escaped (`_h`, `_h_attr`, `_safe_href`) and split into ≤3900-char chunks by `_split_report_for_delivery`, which preserves section headers in each chunk. Each chunk is sent with retry logic in `_send_message_with_retry` (handles `RetryAfter` and `TimedOut`).
+5. Report text is HTML-escaped (`_h`, `_h_attr`, `_safe_href`) and split into ≤3900-char chunks by `_split_report_for_delivery`, which preserves section headers in each chunk. Each chunk is sent with retry logic in `_send_message_with_retry` (handles HTTP 429 rate limits and transient errors).
 
 **Key invariants to preserve:**
 - `BOT_TOKEN` and `SPREADSHEET_ID` are mandatory — checked at startup by `_ensure_configured()`.
