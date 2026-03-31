@@ -19,7 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from google.oauth2.service_account import Credentials
 from maxapi import Bot, Dispatcher
-from maxapi.filters import Command
+from maxapi.filters.command import Command
 from maxapi.types import MessageCreated
 
 # --- Locale (best effort) ---
@@ -75,6 +75,8 @@ _SHEET = None
 _SHEET_LOCK = Lock()
 _REPORT_LOCK = Lock()
 _BOT: Optional["Bot"] = None
+
+dp = Dispatcher()
 
 
 def _h(text: str) -> str:
@@ -552,9 +554,8 @@ async def send_report(chat_id: int, bot: "Bot") -> None:
             logger.warning("Failed to deliver partial-send warning to chat %s", chat_id)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
-        return
+@dp.message_created(Command("start"))
+async def start(event: MessageCreated) -> None:
     text = (
         "👋 Привет! Я бот еженедельной отчётности.\n\n"
         "Каждый понедельник в 15:00 я автоматически отправляю отчёт о выполненных "
@@ -562,71 +563,76 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Команды:</b>\n"
         "/otchet — сформировать и отправить отчёт прямо сейчас\n"
         "/chatid — узнать ID текущего чата\n"
-        "/netdiag — диагностика подключения к Telegram API\n"
+        "/netdiag — диагностика подключения к MAX API\n"
         "/help — показать это сообщение"
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await event.message.answer(text, format="html")
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await start(update, context)
+@dp.message_created(Command("help"))
+async def help_command(event: MessageCreated) -> None:
+    text = (
+        "👋 Привет! Я бот еженедельной отчётности.\n\n"
+        "Каждый понедельник в 15:00 я автоматически отправляю отчёт о выполненных "
+        "и текущих задачах на основе данных из таблицы.\n\n"
+        "<b>Команды:</b>\n"
+        "/otchet — сформировать и отправить отчёт прямо сейчас\n"
+        "/chatid — узнать ID текущего чата\n"
+        "/netdiag — диагностика подключения к MAX API\n"
+        "/help — показать это сообщение"
+    )
+    await event.message.answer(text, format="html")
 
 
-async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
-        return
-    user_id = update.effective_user.id if update.effective_user else None
-    if not _is_allowed_chat(update.effective_chat.id) or not _is_allowed_user(user_id):
-        await update.message.reply_text("Недостаточно прав для выполнения команды.")
+@dp.message_created(Command("otchet"))
+async def report(event: MessageCreated) -> None:
+    user_id = event.message.user_id
+    if not _is_allowed_chat(event.chat_id) or not _is_allowed_user(user_id):
+        await event.message.answer("Недостаточно прав для выполнения команды.")
         return
     try:
-        await send_report(update.effective_chat.id, context.application)
+        await send_report(event.chat_id, _BOT)
     except Exception:
         logger.exception("Ошибка при формировании отчета")
-        await update.message.reply_text("Не удалось сформировать отчет. Проверьте логи сервиса.")
+        await event.message.answer("Не удалось сформировать отчет. Проверьте логи сервиса.")
 
 
-async def chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message:
-        user_id = update.effective_user.id if update.effective_user else None
-        if not _is_allowed_user(user_id):
-            await update.message.reply_text("Недостаточно прав для выполнения команды.")
-            return
-        await update.message.reply_text(f"Chat ID: {update.effective_chat.id}")
-
-
-async def netdiag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
+@dp.message_created(Command("chatid"))
+async def chat_id_command(event: MessageCreated) -> None:
+    user_id = event.message.user_id
+    if not _is_allowed_user(user_id):
+        await event.message.answer("Недостаточно прав для выполнения команды.")
         return
+    await event.message.answer(f"Chat ID: {event.chat_id}")
 
-    user_id = update.effective_user.id if update.effective_user else None
-    if not _is_allowed_chat(update.effective_chat.id) or not _is_allowed_user(user_id):
-        await update.message.reply_text("Недостаточно прав для выполнения команды.")
+
+@dp.message_created(Command("netdiag"))
+async def netdiag(event: MessageCreated) -> None:
+    user_id = event.message.user_id
+    if not _is_allowed_chat(event.chat_id) or not _is_allowed_user(user_id):
+        await event.message.answer("Недостаточно прав для выполнения команды.")
         return
-
-    await update.message.reply_text("🔎 Запускаю сетевую диагностику...")
+    await event.message.answer("🔎 Запускаю сетевую диагностику...")
     try:
-        diag_text = await build_network_diag_text(context.application)
-        await update.message.reply_text(diag_text)
+        diag_text = await build_network_diag_text(_BOT)
+        await event.message.answer(diag_text)
     except Exception:
         logger.exception("Network diagnostic failed")
-        await update.message.reply_text("Не удалось выполнить сетевую диагностику.")
+        await event.message.answer("Не удалось выполнить сетевую диагностику.")
 
 
-async def scheduled_reminder(application) -> None:
+async def scheduled_reminder() -> None:
     if not REPORT_CHAT_ID:
         logger.warning("REPORT_CHAT_ID не задан, напоминание отключено.")
         return
-
     try:
         chat_id_int = int(REPORT_CHAT_ID)
     except ValueError:
         logger.error("REPORT_CHAT_ID должен быть числом, сейчас: %r", REPORT_CHAT_ID)
         return
-
     try:
         await _send_message_with_retry(
-            application.bot,
+            _BOT,
             chat_id=chat_id_int,
             text=(
                 "📋 Напоминание: обновите статусы задач в таблице до понедельника. "
@@ -637,100 +643,49 @@ async def scheduled_reminder(application) -> None:
         logger.exception("Ошибка при отправке напоминания: %s", exc)
 
 
-async def scheduled_report(application) -> None:
+async def scheduled_report() -> None:
     if not REPORT_CHAT_ID:
         logger.warning("REPORT_CHAT_ID не задан, авто-отправка отключена.")
         return
-
     try:
         chat_id_int = int(REPORT_CHAT_ID)
     except ValueError:
-        logger.error("REPORT_CHAT_ID должен быть числом (например -100...), сейчас: %r", REPORT_CHAT_ID)
+        logger.error("REPORT_CHAT_ID должен быть числом, сейчас: %r", REPORT_CHAT_ID)
         return
-
     try:
-        await send_report(chat_id_int, application)
+        await send_report(chat_id_int, _BOT)
     except Exception as exc:
         logger.exception("Ошибка при авто-отправке отчета: %s", exc)
 
 
-def setup_scheduler(application) -> None:
-    """
-    BackgroundScheduler не требует asyncio event loop.
-    Он работает в отдельном потоке и запускает coroutine через application.create_task().
-    """
-    scheduler = BackgroundScheduler(timezone=REPORT_TIMEZONE)
+async def main() -> None:
+    global _BOT
+    _ensure_configured()
+    _BOT = Bot(BOT_TOKEN)
 
-    def _report_job():
-        application.create_task(scheduled_report(application))
-
-    def _reminder_job():
-        application.create_task(scheduled_reminder(application))
-
+    scheduler = AsyncIOScheduler(timezone=REPORT_TIMEZONE)
     scheduler.add_job(
-        _report_job,
+        scheduled_report,
         CronTrigger(day_of_week="mon", hour=15, minute=0, timezone=REPORT_TIMEZONE),
     )
     scheduler.add_job(
-        _reminder_job,
+        scheduled_reminder,
         CronTrigger(day_of_week="fri", hour=16, minute=0, timezone=REPORT_TIMEZONE),
     )
     scheduler.start()
-    application.bot_data["scheduler"] = scheduler
     logger.info("Scheduler started (%s, mon 15:00 report / fri 16:00 reminder)", str(REPORT_TIMEZONE))
-
-
-def shutdown_scheduler(application) -> None:
-    scheduler = application.bot_data.get("scheduler")
-    if scheduler and scheduler.running:
-        scheduler.shutdown(wait=False)
-        logger.info("Scheduler stopped")
-
-
-async def _post_init(application) -> None:
-    await application.bot.set_my_commands([
-        BotCommand("otchet", "Сформировать и отправить отчёт"),
-        BotCommand("chatid", "Узнать ID текущего чата"),
-        BotCommand("netdiag", "Диагностика подключения к Telegram API"),
-        BotCommand("help", "Показать справку"),
-    ])
-    logger.info("BotFather commands registered")
-
-
-if __name__ == "__main__":
-    _ensure_configured()
-
-    if PROXY_URL:
-        # Log proxy without credentials for safety
-        _proxy_log = PROXY_URL.split("@")[-1] if "@" in PROXY_URL else PROXY_URL
-        logger.info("SOCKS5 proxy enabled: socks5://%s", _proxy_log)
-
-    builder = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .connect_timeout(TG_CONNECT_TIMEOUT_SEC)
-        .read_timeout(TG_READ_TIMEOUT_SEC)
-        .write_timeout(TG_WRITE_TIMEOUT_SEC)
-        .pool_timeout(TG_POOL_TIMEOUT_SEC)
-        .get_updates_connect_timeout(TG_GET_UPDATES_CONNECT_TIMEOUT_SEC)
-        .get_updates_read_timeout(TG_GET_UPDATES_READ_TIMEOUT_SEC)
-        .get_updates_write_timeout(TG_GET_UPDATES_WRITE_TIMEOUT_SEC)
-        .get_updates_pool_timeout(TG_GET_UPDATES_POOL_TIMEOUT_SEC)
-        .post_init(_post_init)
-    )
-    if PROXY_URL:
-        builder = builder.proxy(PROXY_URL).get_updates_proxy(PROXY_URL)
-    app = builder.build()
-    setup_scheduler(app)
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("otchet", report))
-    app.add_handler(CommandHandler("chatid", chat_id))
-    app.add_handler(CommandHandler("netdiag", netdiag))
 
     logger.info("Бот запущен. Ожидание команд.")
     try:
-        app.run_polling()
+        await dp.start_polling(_BOT)
     finally:
-        shutdown_scheduler(app)
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+            logger.info("Scheduler stopped")
+        # Close aiohttp session to avoid ResourceWarning on exit
+        if _BOT is not None and hasattr(_BOT, "close"):
+            await _BOT.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

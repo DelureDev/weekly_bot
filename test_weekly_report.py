@@ -3,8 +3,6 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from telegram.error import TimedOut
-
 import weekly_report as wr
 
 COL_TASK = "\u0417\u0430\u0434\u0430\u0447\u0430"
@@ -130,14 +128,13 @@ class ReportGenerationTests(unittest.TestCase):
 class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_report_sends_intro_then_report(self) -> None:
         bot = SimpleNamespace(send_message=AsyncMock())
-        application = SimpleNamespace(bot=bot)
 
         with (
             patch.object(wr, "INTRO_MENTIONS", "@u1 @u2"),
             patch.object(wr, "INTRO_TEXT", "intro"),
             patch.object(wr.asyncio, "to_thread", new=AsyncMock(return_value="report text")),
         ):
-            await wr.send_report(-100123, application)
+            await wr.send_report(-100123, bot)
 
         self.assertEqual(bot.send_message.await_count, 2)
         first = bot.send_message.await_args_list[0].kwargs
@@ -147,22 +144,20 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("parse_mode", first)
         self.assertEqual(second["chat_id"], -100123)
         self.assertEqual(second["text"], "report text")
-        self.assertEqual(second["parse_mode"], wr.ParseMode.HTML)
-        self.assertTrue(second["disable_web_page_preview"])
+        self.assertEqual(second["format"], "html")
+        self.assertNotIn("disable_web_page_preview", second)
 
     async def test_send_report_does_not_send_messages_when_generation_fails(self) -> None:
         bot = SimpleNamespace(send_message=AsyncMock())
-        application = SimpleNamespace(bot=bot)
 
         with patch.object(wr.asyncio, "to_thread", new=AsyncMock(side_effect=RuntimeError("boom"))):
             with self.assertRaises(RuntimeError):
-                await wr.send_report(-100123, application)
+                await wr.send_report(-100123, bot)
 
         bot.send_message.assert_not_awaited()
 
     async def test_send_report_retries_when_timeout_happens(self) -> None:
-        bot = SimpleNamespace(send_message=AsyncMock(side_effect=[TimedOut("timeout"), None, None]))
-        application = SimpleNamespace(bot=bot)
+        bot = SimpleNamespace(send_message=AsyncMock(side_effect=[Exception("timeout"), None, None]))
 
         with (
             patch.object(wr, "INTRO_MENTIONS", "@u1"),
@@ -170,7 +165,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             patch.object(wr.asyncio, "to_thread", new=AsyncMock(return_value="report text")),
             patch.object(wr.asyncio, "sleep", new=AsyncMock()),
         ):
-            await wr.send_report(-100123, application)
+            await wr.send_report(-100123, bot)
 
         self.assertEqual(bot.send_message.await_count, 3)
 
@@ -180,14 +175,13 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=[
                     None,  # intro ok
                     None,  # first chunk ok
-                    TimedOut("t1"),
-                    TimedOut("t2"),
-                    TimedOut("t3"),  # second chunk failed after retries
+                    Exception("t1"),
+                    Exception("t2"),
+                    Exception("t3"),  # second chunk failed after retries
                     None,  # warning about partial send
                 ]
             )
         )
-        application = SimpleNamespace(bot=bot)
 
         with (
             patch.object(wr, "INTRO_MENTIONS", "@u1"),
@@ -196,81 +190,72 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             patch.object(wr, "_split_report_for_delivery", return_value=["chunk-1", "chunk-2"]),
             patch.object(wr.asyncio, "sleep", new=AsyncMock()),
         ):
-            await wr.send_report(-100123, application)
+            await wr.send_report(-100123, bot)
 
         self.assertEqual(bot.send_message.await_count, 6)
 
     async def test_report_denies_unauthorized_chat(self) -> None:
-        message = SimpleNamespace(reply_text=AsyncMock())
-        update = SimpleNamespace(
-            message=message,
-            effective_chat=SimpleNamespace(id=-200),
-            effective_user=SimpleNamespace(id=123),
+        answer = AsyncMock()
+        event = SimpleNamespace(
+            chat_id=-200,
+            message=SimpleNamespace(user_id=123, answer=answer),
         )
-        context = SimpleNamespace(application=SimpleNamespace())
 
         with (
             patch.object(wr, "_is_allowed_chat", return_value=False),
             patch.object(wr, "_is_allowed_user", return_value=True),
             patch.object(wr, "send_report", new=AsyncMock()),
         ):
-            await wr.report(update, context)
+            await wr.report(event)
 
-        message.reply_text.assert_awaited_once()
+        answer.assert_awaited_once()
         self.assertIn(
             "\u041d\u0435\u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e \u043f\u0440\u0430\u0432",
-            message.reply_text.await_args.args[0],
+            answer.await_args.args[0],
         )
 
     async def test_scheduled_report_skips_invalid_chat_id(self) -> None:
-        app = SimpleNamespace()
-
         with (
             patch.object(wr, "REPORT_CHAT_ID", "not-a-number"),
             patch.object(wr, "send_report", new=AsyncMock()) as send_report,
             patch.object(wr.logger, "error") as log_error,
         ):
-            await wr.scheduled_report(app)
+            await wr.scheduled_report()
 
         send_report.assert_not_awaited()
         log_error.assert_called_once()
 
     async def test_scheduled_report_calls_send_report_when_chat_id_valid(self) -> None:
-        app = SimpleNamespace()
-
         with (
             patch.object(wr, "REPORT_CHAT_ID", "-1003546739323"),
             patch.object(wr, "send_report", new=AsyncMock()) as send_report,
+            patch.object(wr, "_BOT", SimpleNamespace()) as mock_bot,
         ):
-            await wr.scheduled_report(app)
+            await wr.scheduled_report()
 
-        send_report.assert_awaited_once_with(-1003546739323, app)
+        send_report.assert_awaited_once_with(-1003546739323, mock_bot)
 
     async def test_netdiag_denies_unauthorized_chat(self) -> None:
-        message = SimpleNamespace(reply_text=AsyncMock())
-        update = SimpleNamespace(
-            message=message,
-            effective_chat=SimpleNamespace(id=-200),
-            effective_user=SimpleNamespace(id=123),
+        answer = AsyncMock()
+        event = SimpleNamespace(
+            chat_id=-200,
+            message=SimpleNamespace(user_id=123, answer=answer),
         )
-        context = SimpleNamespace(application=SimpleNamespace())
 
         with (
             patch.object(wr, "_is_allowed_chat", return_value=False),
             patch.object(wr, "_is_allowed_user", return_value=True),
         ):
-            await wr.netdiag(update, context)
+            await wr.netdiag(event)
 
-        message.reply_text.assert_awaited_once()
+        answer.assert_awaited_once()
 
     async def test_netdiag_replies_with_diagnostic_text(self) -> None:
-        message = SimpleNamespace(reply_text=AsyncMock())
-        update = SimpleNamespace(
-            message=message,
-            effective_chat=SimpleNamespace(id=-200),
-            effective_user=SimpleNamespace(id=123),
+        answer = AsyncMock()
+        event = SimpleNamespace(
+            chat_id=-200,
+            message=SimpleNamespace(user_id=123, answer=answer),
         )
-        context = SimpleNamespace(application=SimpleNamespace())
 
         with (
             patch.object(wr, "_is_allowed_chat", return_value=True),
@@ -278,16 +263,16 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 wr,
                 "build_network_diag_text",
-                new=AsyncMock(return_value="🌐 Диагностика сети для api.telegram.org"),
+                new=AsyncMock(return_value="🌐 Диагностика сети для platform-api.max.ru"),
             ),
         ):
-            await wr.netdiag(update, context)
+            await wr.netdiag(event)
 
-        self.assertEqual(message.reply_text.await_count, 2)
-        self.assertIn("диагностику", message.reply_text.await_args_list[0].args[0].lower())
+        self.assertEqual(answer.await_count, 2)
+        self.assertIn("диагностику", answer.await_args_list[0].args[0].lower())
         self.assertIn(
-            "🌐 Диагностика сети для api.telegram.org",
-            message.reply_text.await_args_list[1].args[0],
+            "🌐 Диагностика сети для platform-api.max.ru",
+            answer.await_args_list[1].args[0],
         )
 
 
