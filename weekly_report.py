@@ -10,18 +10,17 @@ from datetime import date, datetime, timedelta
 from html import escape as html_escape
 from threading import Lock
 from typing import Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import gspread
 import httpx
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from google.oauth2.service_account import Credentials
-from telegram import BotCommand, Update
-from telegram.constants import ParseMode
-from telegram.error import RetryAfter, TimedOut
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from maxapi import Bot, Dispatcher
+from maxapi.filters import Command
+from maxapi.types import MessageCreated
 
 # --- Locale (best effort) ---
 try:
@@ -57,23 +56,11 @@ INTRO_TEXT = os.getenv("INTRO_TEXT", "Коллеги, подготовил еж�
 
 REPORT_TIMEZONE = ZoneInfo(os.getenv("REPORT_TIMEZONE", "Europe/Moscow"))
 ALLOWED_CHAT_IDS_RAW = os.getenv("ALLOWED_CHAT_IDS", "")
-ALLOWED_TG_USERS_RAW = os.getenv("ALLOWED_TG_USERS", "")
+ALLOWED_USERS_RAW = os.getenv("ALLOWED_USERS", os.getenv("ALLOWED_TG_USERS", ""))
 REPORT_CHUNK_SIZE = 3900
 SEND_RETRY_ATTEMPTS = 3
 SEND_RETRY_BASE_DELAY_SEC = 1.0
-TG_CONNECT_TIMEOUT_SEC = float(os.getenv("TG_CONNECT_TIMEOUT_SEC", "10"))
-TG_READ_TIMEOUT_SEC = float(os.getenv("TG_READ_TIMEOUT_SEC", "60"))
-TG_WRITE_TIMEOUT_SEC = float(os.getenv("TG_WRITE_TIMEOUT_SEC", "30"))
-TG_POOL_TIMEOUT_SEC = float(os.getenv("TG_POOL_TIMEOUT_SEC", "10"))
-TG_SEND_CONNECT_TIMEOUT_SEC = float(os.getenv("TG_SEND_CONNECT_TIMEOUT_SEC", "10"))
-TG_SEND_READ_TIMEOUT_SEC = float(os.getenv("TG_SEND_READ_TIMEOUT_SEC", "20"))
-TG_SEND_WRITE_TIMEOUT_SEC = float(os.getenv("TG_SEND_WRITE_TIMEOUT_SEC", "20"))
-TG_SEND_POOL_TIMEOUT_SEC = float(os.getenv("TG_SEND_POOL_TIMEOUT_SEC", "10"))
-TG_GET_UPDATES_READ_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_READ_TIMEOUT_SEC", "60"))
-TG_GET_UPDATES_CONNECT_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_CONNECT_TIMEOUT_SEC", "10"))
-TG_GET_UPDATES_WRITE_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_WRITE_TIMEOUT_SEC", "30"))
-TG_GET_UPDATES_POOL_TIMEOUT_SEC = float(os.getenv("TG_GET_UPDATES_POOL_TIMEOUT_SEC", "10"))
-NETDIAG_HOST = os.getenv("NETDIAG_HOST", "api.telegram.org")
+NETDIAG_HOST = os.getenv("NETDIAG_HOST", "platform-api.max.ru")
 try:
     NETDIAG_HTTP_ATTEMPTS = max(1, int(os.getenv("NETDIAG_HTTP_ATTEMPTS", "3")))
 except ValueError:
@@ -83,22 +70,11 @@ try:
 except ValueError:
     NETDIAG_TIMEOUT_SEC = 6.0
 
-# --- Proxy (SOCKS5) ---
-_PROXY_HOST = os.getenv("PROXY_HOST", "")
-_PROXY_PORT = os.getenv("PROXY_PORT", "")
-_PROXY_LOGIN = os.getenv("PROXY_LOGIN", "")
-_PROXY_PASS = os.getenv("PROXY_PASS", "")
-PROXY_URL: Optional[str] = None
-if _PROXY_HOST and _PROXY_PORT:
-    if _PROXY_LOGIN and _PROXY_PASS:
-        PROXY_URL = f"socks5://{quote(_PROXY_LOGIN, safe='')}:{quote(_PROXY_PASS, safe='')}@{_PROXY_HOST}:{_PROXY_PORT}"
-    else:
-        PROXY_URL = f"socks5://{_PROXY_HOST}:{_PROXY_PORT}"
-
 # Cached worksheet (auth/open happens once; if fails, cache resets)
 _SHEET = None
 _SHEET_LOCK = Lock()
 _REPORT_LOCK = Lock()
+_BOT: Optional["Bot"] = None
 
 
 def _h(text: str) -> str:
@@ -125,7 +101,7 @@ def _parse_int_set(raw: str, name: str) -> set[int]:
 
 
 ALLOWED_CHAT_IDS = _parse_int_set(ALLOWED_CHAT_IDS_RAW, "ALLOWED_CHAT_IDS")
-ALLOWED_TG_USERS = _parse_int_set(ALLOWED_TG_USERS_RAW, "ALLOWED_TG_USERS")
+ALLOWED_USERS = _parse_int_set(ALLOWED_USERS_RAW, "ALLOWED_USERS")
 
 
 def _safe_href(url: str) -> Optional[str]:
@@ -144,11 +120,11 @@ def _is_allowed_chat(chat_id: int) -> bool:
 
 
 def _is_allowed_user(user_id: Optional[int]) -> bool:
-    if not ALLOWED_TG_USERS:
+    if not ALLOWED_USERS:
         return True
     if user_id is None:
         return False
-    return user_id in ALLOWED_TG_USERS
+    return user_id in ALLOWED_USERS
 
 
 def _ensure_configured() -> None:
