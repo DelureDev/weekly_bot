@@ -586,12 +586,12 @@ async def help_command(event: MessageCreated) -> None:
 
 @dp.message_created(Command("otchet"))
 async def report(event: MessageCreated) -> None:
-    user_id = event.message.user_id
-    if not _is_allowed_chat(event.chat_id) or not _is_allowed_user(user_id):
+    user_id = event.message.sender.user_id if event.message.sender else None
+    if not _is_allowed_chat(event.message.recipient.chat_id) or not _is_allowed_user(user_id):
         await event.message.answer("Недостаточно прав для выполнения команды.")
         return
     try:
-        await send_report(event.chat_id, _BOT)
+        await send_report(event.message.recipient.chat_id, _BOT)
     except Exception:
         logger.exception("Ошибка при формировании отчета")
         await event.message.answer("Не удалось сформировать отчет. Проверьте логи сервиса.")
@@ -599,17 +599,17 @@ async def report(event: MessageCreated) -> None:
 
 @dp.message_created(Command("chatid"))
 async def chat_id_command(event: MessageCreated) -> None:
-    user_id = event.message.user_id
+    user_id = event.message.sender.user_id if event.message.sender else None
     if not _is_allowed_user(user_id):
         await event.message.answer("Недостаточно прав для выполнения команды.")
         return
-    await event.message.answer(f"Chat ID: {event.chat_id}")
+    await event.message.answer(f"Chat ID: {event.message.recipient.chat_id}")
 
 
 @dp.message_created(Command("netdiag"))
 async def netdiag(event: MessageCreated) -> None:
-    user_id = event.message.user_id
-    if not _is_allowed_chat(event.chat_id) or not _is_allowed_user(user_id):
+    user_id = event.message.sender.user_id if event.message.sender else None
+    if not _is_allowed_chat(event.message.recipient.chat_id) or not _is_allowed_user(user_id):
         await event.message.answer("Недостаточно прав для выполнения команды.")
         return
     await event.message.answer("🔎 Запускаю сетевую диагностику...")

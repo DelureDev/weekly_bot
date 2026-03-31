@@ -197,8 +197,11 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_report_denies_unauthorized_chat(self) -> None:
         answer = AsyncMock()
         event = SimpleNamespace(
-            chat_id=-200,
-            message=SimpleNamespace(user_id=123, answer=answer),
+            message=SimpleNamespace(
+                sender=SimpleNamespace(user_id=123),
+                recipient=SimpleNamespace(chat_id=-200),
+                answer=answer,
+            ),
         )
 
         with (
@@ -238,8 +241,11 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_netdiag_denies_unauthorized_chat(self) -> None:
         answer = AsyncMock()
         event = SimpleNamespace(
-            chat_id=-200,
-            message=SimpleNamespace(user_id=123, answer=answer),
+            message=SimpleNamespace(
+                sender=SimpleNamespace(user_id=123),
+                recipient=SimpleNamespace(chat_id=-200),
+                answer=answer,
+            ),
         )
 
         with (
@@ -253,8 +259,11 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_netdiag_replies_with_diagnostic_text(self) -> None:
         answer = AsyncMock()
         event = SimpleNamespace(
-            chat_id=-200,
-            message=SimpleNamespace(user_id=123, answer=answer),
+            message=SimpleNamespace(
+                sender=SimpleNamespace(user_id=123),
+                recipient=SimpleNamespace(chat_id=-200),
+                answer=answer,
+            ),
         )
 
         with (
