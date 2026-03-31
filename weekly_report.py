@@ -385,7 +385,7 @@ async def _https_probe(
     status_codes: list[str] = []
 
     timeout = httpx.Timeout(timeout_sec)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, proxy=PROXY_URL) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         for _ in range(max(1, attempts)):
             start = time.perf_counter()
             try:
@@ -405,14 +405,11 @@ async def _https_probe(
     return ok, fail, avg_duration, max_duration, codes
 
 
-async def build_network_diag_text(application) -> str:
+async def build_network_diag_text(bot: "Bot") -> str:
     host = NETDIAG_HOST
-    proxy_active = PROXY_URL is not None
     lines: list[str] = [f"🌐 Диагностика сети для {host}"]
-    if proxy_active:
-        lines.append(f"🔀 Прокси: {_PROXY_HOST}:{_PROXY_PORT}")
 
-    # DNS is always a direct check; label it so when proxy is active
+    # DNS is always a direct check
     try:
         a_records, aaaa_records = await _resolve_dns(host)
     except Exception:
@@ -420,37 +417,18 @@ async def build_network_diag_text(application) -> str:
         a_records = []
         aaaa_records = []
     else:
-        dns_suffix = " (прямой)" if proxy_active else ""
-        lines.append(f"✅ DNS A{dns_suffix}: {', '.join(a_records) if a_records else '-'}")
+        lines.append(f"✅ DNS A: {', '.join(a_records) if a_records else '-'}")
         aaaa_str = ', '.join(aaaa_records) if aaaa_records else '-'
-        lines.append(f"{'✅' if aaaa_records else '⚠️'} DNS AAAA{dns_suffix}: {aaaa_str}")
+        lines.append(f"{'✅' if aaaa_records else '⚠️'} DNS AAAA: {aaaa_str}")
 
-    # TCP: probe proxy reachability when proxy is active, direct Telegram otherwise
-    tcp4_ok = False
-    tcp6_ok = False
-    proxy_tcp_ok = False
-    if proxy_active:
-        try:
-            proxy_port_int = int(_PROXY_PORT)
-        except ValueError:
-            proxy_port_int = 0
-        proxy_tcp_ok, proxy_tcp_info = await _tcp_probe(
-            _PROXY_HOST, proxy_port_int, socket.AF_INET, NETDIAG_TIMEOUT_SEC
-        )
-        lines.append(
-            f"{'✅' if proxy_tcp_ok else '❌'} TCP прокси {_PROXY_HOST}:{_PROXY_PORT}: "
-            f"{'OK' if proxy_tcp_ok else 'FAIL'} ({proxy_tcp_info})"
-        )
+    tcp4_ok, tcp4_info = await _tcp_probe(host, 443, socket.AF_INET, NETDIAG_TIMEOUT_SEC)
+    lines.append(f"{'✅' if tcp4_ok else '❌'} TCP 443 IPv4: {'OK' if tcp4_ok else 'FAIL'} ({tcp4_info})")
+    if aaaa_records:
+        tcp6_ok, tcp6_info = await _tcp_probe(host, 443, socket.AF_INET6, NETDIAG_TIMEOUT_SEC)
+        lines.append(f"{'✅' if tcp6_ok else '⚠️'} TCP 443 IPv6: {'OK' if tcp6_ok else 'FAIL'} ({tcp6_info})")
     else:
-        tcp4_ok, tcp4_info = await _tcp_probe(host, 443, socket.AF_INET, NETDIAG_TIMEOUT_SEC)
-        lines.append(f"{'✅' if tcp4_ok else '❌'} TCP 443 IPv4: {'OK' if tcp4_ok else 'FAIL'} ({tcp4_info})")
-        if aaaa_records:
-            tcp6_ok, tcp6_info = await _tcp_probe(host, 443, socket.AF_INET6, NETDIAG_TIMEOUT_SEC)
-            lines.append(f"{'✅' if tcp6_ok else '⚠️'} TCP 443 IPv6: {'OK' if tcp6_ok else 'FAIL'} ({tcp6_info})")
-        else:
-            lines.append("⚠️ TCP 443 IPv6: SKIP (нет AAAA)")
+        lines.append("⚠️ TCP 443 IPv6: SKIP (нет AAAA)")
 
-    # HTTPS and Bot API probes go through proxy when configured
     ok, fail, https_avg, https_max, https_codes = await _https_probe(
         f"https://{host}",
         NETDIAG_HTTP_ATTEMPTS,
@@ -469,80 +447,75 @@ async def build_network_diag_text(application) -> str:
     botapi_ok = False
     botapi_elapsed: Optional[float] = None
     try:
-        await application.bot.get_me(
-            connect_timeout=TG_SEND_CONNECT_TIMEOUT_SEC,
-            read_timeout=TG_SEND_READ_TIMEOUT_SEC,
-            write_timeout=TG_SEND_WRITE_TIMEOUT_SEC,
-            pool_timeout=TG_SEND_POOL_TIMEOUT_SEC,
-        )
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(NETDIAG_TIMEOUT_SEC),
+            follow_redirects=False,
+        ) as client:
+            resp = await client.get(
+                "https://platform-api.max.ru/me",
+                headers={"Authorization": BOT_TOKEN},
+            )
         botapi_elapsed = time.perf_counter() - botapi_start
-        botapi_ok = True
-        bot_mark = "✅" if botapi_elapsed < 1.0 else "⚠️"
-        lines.append(f"{bot_mark} Bot API getMe: OK ({_format_duration_ms(botapi_elapsed)})")
+        botapi_ok = resp.status_code == 200
+        bot_mark = "✅" if botapi_ok and botapi_elapsed < 1.0 else "⚠️"
+        lines.append(
+            f"{bot_mark} Bot API /me: {'OK' if botapi_ok else f'HTTP {resp.status_code}'}"
+            f" ({_format_duration_ms(botapi_elapsed)})"
+        )
     except Exception as exc:
-        lines.append(f"❌ Bot API getMe: FAIL ({type(exc).__name__})")
+        lines.append(f"❌ Bot API /me: FAIL ({type(exc).__name__})")
 
     # Summary
-    tcp_ok_for_summary = proxy_tcp_ok if proxy_active else tcp4_ok
+    tcp_ok_for_summary = tcp4_ok
     if not tcp_ok_for_summary or ok == 0 or not botapi_ok:
-        lines.append("🚨 Итог: есть критичная проблема с доступом к Telegram API.")
-    elif not proxy_active and aaaa_records and not tcp6_ok:
+        lines.append("🚨 Итог: есть критичная проблема с доступом к MAX API.")
+    elif aaaa_records and not tcp6_ok:
         lines.append("⚠️ Итог: IPv4 работает, IPv6 недоступен. Возможны редкие таймауты.")
     elif fail > 0 or (https_max is not None and https_max >= 1.0) or (
         botapi_elapsed is not None and botapi_elapsed >= 1.0
     ):
         lines.append("⚠️ Итог: доступ есть, но канал нестабилен (скачки задержек).")
     else:
-        lines.append("✅ Итог: доступ к Telegram API стабильный.")
+        lines.append("✅ Итог: доступ к MAX API стабильный.")
 
     return "\n".join(lines)
 
 
-async def _send_message_with_retry(bot, **kwargs) -> None:
-    kwargs.setdefault("connect_timeout", TG_SEND_CONNECT_TIMEOUT_SEC)
-    kwargs.setdefault("read_timeout", TG_SEND_READ_TIMEOUT_SEC)
-    kwargs.setdefault("write_timeout", TG_SEND_WRITE_TIMEOUT_SEC)
-    kwargs.setdefault("pool_timeout", TG_SEND_POOL_TIMEOUT_SEC)
+async def _send_message_with_retry(bot: "Bot", chat_id: int, text: str, format: Optional[str] = None) -> None:
     last_error: Optional[Exception] = None
     for attempt in range(1, SEND_RETRY_ATTEMPTS + 1):
         try:
-            await bot.send_message(**kwargs)
+            await bot.send_message(chat_id=chat_id, text=text, format=format)
             return
-        except RetryAfter as exc:
+        except Exception as exc:
             last_error = exc
             if attempt >= SEND_RETRY_ATTEMPTS:
                 break
-            delay = exc.retry_after + 0.5
-            logger.warning(
-                "Telegram rate limit (attempt %s/%s). Retry in %.1fs",
-                attempt,
-                SEND_RETRY_ATTEMPTS,
-                delay,
-            )
-            await asyncio.sleep(delay)
-        except TimedOut as exc:
-            last_error = exc
-            if attempt >= SEND_RETRY_ATTEMPTS:
-                break
-            delay = SEND_RETRY_BASE_DELAY_SEC * attempt
-            logger.warning(
-                "Telegram send timeout (attempt %s/%s). Retry in %.1fs",
-                attempt,
-                SEND_RETRY_ATTEMPTS,
-                delay,
-            )
+            exc_str = str(exc)
+            if "429" in exc_str or "Too Many Requests" in exc_str:
+                delay = SEND_RETRY_BASE_DELAY_SEC * attempt * 2
+                logger.warning(
+                    "MAX rate limit (attempt %s/%s). Retry in %.1fs", attempt, SEND_RETRY_ATTEMPTS, delay
+                )
+            else:
+                delay = SEND_RETRY_BASE_DELAY_SEC * attempt
+                logger.warning(
+                    "MAX send error (attempt %s/%s): %s. Retry in %.1fs",
+                    attempt, SEND_RETRY_ATTEMPTS, exc, delay,
+                )
             await asyncio.sleep(delay)
 
     if last_error is not None:
         raise last_error
 
 
-async def send_report(chat_id: int, application) -> None:
+async def send_report(chat_id: int, bot: "Bot") -> None:
     report_text = await asyncio.to_thread(generate_report_threadsafe)
+    # intro is sent as plain text (no format=), matching original behavior
     intro = f"{INTRO_MENTIONS} {INTRO_TEXT}".strip()
     chunks = _split_report_for_delivery(report_text)
     if intro:
-        await _send_message_with_retry(application.bot, chat_id=chat_id, text=intro)
+        await _send_message_with_retry(bot, chat_id=chat_id, text=intro)
 
     sent_chunks = 0
     failed_chunks = 0
@@ -550,25 +523,23 @@ async def send_report(chat_id: int, application) -> None:
     for idx, chunk in enumerate(chunks, start=1):
         try:
             await _send_message_with_retry(
-                application.bot,
+                bot,
                 chat_id=chat_id,
                 text=chunk,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+                format="html",
             )
             sent_chunks += 1
             if idx < len(chunks):
-                await asyncio.sleep(0.35)
-        except (TimedOut, RetryAfter):
+                await asyncio.sleep(0.3)
+        except Exception as exc:  # noqa: BLE001 — intentional: absorb per-chunk network errors
             failed_chunks += 1
             logger.error(
-                "Report chunk send failed after retries (%s/%s)",
-                idx,
-                len(chunks),
+                "Failed to send chunk %s/%s to chat %s: %s",
+                idx, len(chunks), chat_id, exc,
             )
 
     if sent_chunks == 0:
-        raise TimedOut("Timed out while sending all report chunks")
+        raise RuntimeError("Failed to send all report chunks")
 
     if failed_chunks > 0:
         warning_text = (
@@ -576,8 +547,8 @@ async def send_report(chat_id: int, application) -> None:
             f"из {len(chunks)} частей отчета."
         )
         try:
-            await _send_message_with_retry(application.bot, chat_id=chat_id, text=warning_text)
-        except TimedOut:
+            await _send_message_with_retry(bot, chat_id=chat_id, text=warning_text)
+        except Exception:
             logger.warning("Failed to deliver partial-send warning to chat %s", chat_id)
 
 
