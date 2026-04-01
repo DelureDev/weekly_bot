@@ -13,6 +13,10 @@ from typing import Optional
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import gspread
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
