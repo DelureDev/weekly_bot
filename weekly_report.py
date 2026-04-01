@@ -19,6 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from google.oauth2.service_account import Credentials
 from maxapi import Bot, Dispatcher
+from maxapi.enums.parse_mode import ParseMode
 from maxapi.filters.command import Command
 from maxapi.types import MessageCreated
 
@@ -483,7 +484,7 @@ async def build_network_diag_text(bot: "Bot") -> str:
     return "\n".join(lines)
 
 
-async def _send_message_with_retry(bot: "Bot", chat_id: int, text: str, format: Optional[str] = None) -> None:
+async def _send_message_with_retry(bot: "Bot", chat_id: int, text: str, format: Optional[ParseMode] = None) -> None:
     last_error: Optional[Exception] = None
     for attempt in range(1, SEND_RETRY_ATTEMPTS + 1):
         try:
@@ -528,7 +529,7 @@ async def send_report(chat_id: int, bot: "Bot") -> None:
                 bot,
                 chat_id=chat_id,
                 text=chunk,
-                format="html",
+                format=ParseMode.HTML,
             )
             sent_chunks += 1
             if idx < len(chunks):
